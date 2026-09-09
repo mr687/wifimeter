@@ -40,7 +40,6 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
 Want to check what you downloaded? Each release ships a `SHA256SUMS` next to
 the binaries.
 
-
 ### Build from source
 
 ```sh
@@ -67,8 +66,9 @@ Phone hotspot     ↓ 1.7 GB ↑ 200 MB     ↓ 5.8 GB ↑ 744 MB     ↓ 5.8 GB
 (discarded: 0.3% — 14 samples, 2 sleep/wake, 1 network-switch)
 ```
 
-`doctor` touches no stored data, which makes it the thing to run first when a
-number looks wrong.
+Alongside those reads, `doctor` reports what is in the database: sample count,
+discard rate, the oldest and newest samples, database size, and whether the
+agent is loaded. It is the thing to run first when a number looks wrong.
 
 To stop collecting:
 
@@ -78,6 +78,23 @@ wifimeter uninstall --wipe    # also delete the database
 ```
 
 ## Use cases
+
+To see the shape of one network's usage rather than a total:
+
+```sh
+wifimeter report --daily --label "Phone hotspot"   # or --fp KEY, or neither for the heaviest
+wifimeter report --daily --days 30
+```
+
+Days are bucketed by local time, with quiet days kept as zeroes, followed by the
+peak day, the median, and the busiest seven-day stretch. A total hides the week
+that ran several times higher, and that is the week that exhausts an allowance.
+
+To check which build you have:
+
+```sh
+wifimeter version     # wifimeter v1.0.1 (darwin/arm64)
+```
 
 - **Sizing a hotspot plan.** Tethering away from Wi-Fi and unsure how much
   quota to buy? Run it for a normal week; the 7-day column is your answer.
@@ -90,8 +107,6 @@ wifimeter uninstall --wipe    # also delete the database
 - **Travel SIM and eSIM.** Same problem, smaller scale: one number per network.
 
 It will not name the app that used the data, only the network that carried it.
-
-
 
 ## How it works
 
