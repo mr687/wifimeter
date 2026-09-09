@@ -75,6 +75,14 @@ func TestFingerprint(t *testing.T) {
 			golden:   "fingerprint_upper.txt",
 		},
 		{
+			name:     "short mac octets are padded",
+			route:    "route_warp.txt",
+			arp:      "arp_shortmac.txt",
+			ifconfig: "ifconfig_active.txt",
+			summary:  "summary_home.txt",
+			golden:   "fingerprint_shortmac.txt",
+		},
+		{
 			name:     "no gateway",
 			route:    "route_none.txt",
 			arp:      "arp_hotspot.txt",
@@ -316,5 +324,30 @@ func TestFormatBytes(t *testing.T) {
 		if got := FormatBytes(tc.rx, tc.tx); got != tc.want {
 			t.Errorf("FormatBytes(%d, %d) = %q, want %q", tc.rx, tc.tx, got, tc.want)
 		}
+	}
+}
+
+// arp on macOS leaves the leading zero off single hex digits, so a gateway
+// MAC arrives as 8:0:5e:2:53:7. net.ParseMAC rejects that form, and a gateway
+// with any byte under 0x10 would otherwise fail to parse and lose every
+// sample from its network.
+func TestParseGatewayMACPadding(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"? (198.51.100.1) at 8:0:5e:2:53:7 on en0 ifscope [ethernet]", "08:00:5e:02:53:07"},
+		{"? (198.51.100.1) at 00:00:5e:00:53:0a on en0 ifscope [ethernet]", "00:00:5e:00:53:0a"},
+		{"? (198.51.100.1) at 00:00:5E:00:53:0A on en0 ifscope [ethernet]", "00:00:5e:00:53:0a"},
+	}
+	for _, tc := range cases {
+		got, err := parseGatewayMAC(tc.in)
+		if err != nil {
+			t.Fatalf("parseGatewayMAC(%q): %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Errorf("parseGatewayMAC(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	if _, err := parseGatewayMAC("? (198.51.100.1) at (incomplete) on en0 ifscope [ethernet]"); err == nil {
+		t.Error("incomplete arp entry should not parse")
 	}
 }

@@ -119,13 +119,27 @@ func parseGatewayMAC(out string) (string, error) {
 			continue
 		}
 		mac, _, _ := strings.Cut(strings.TrimSpace(rest), " ")
-		hw, err := net.ParseMAC(mac)
+		hw, err := net.ParseMAC(padMACOctets(mac))
 		if err != nil || len(hw) != 6 { // non-ethernet forms are not our gateway
 			continue
 		}
 		return hw.String(), nil
 	}
 	return "", ErrNoMAC
+}
+
+// padMACOctets zero-pads single hex digits, turning 8:0:5e:2:53:7 into
+// 08:00:5e:02:53:07. arp on macOS leaves the leading zero off, and
+// net.ParseMAC rejects the short form, so a gateway holding any byte under
+// 0x10 would fail to parse and lose every sample from that network.
+func padMACOctets(s string) string {
+	parts := strings.Split(s, ":")
+	for i, p := range parts {
+		if len(p) == 1 {
+			parts[i] = "0" + p
+		}
+	}
+	return strings.Join(parts, ":")
 }
 
 // parseSubnet prefers the DHCP subnet mask over the interface netmask, since
