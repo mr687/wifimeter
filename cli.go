@@ -54,9 +54,10 @@ func reportCmd(args []string) error {
 	return rep.Write(os.Stdout)
 }
 
-// dailyReport breaks a single network down by day. Breaking every network
-// down at once would run to hundreds of lines, so with no --label or --fp it
-// picks the network that has carried the most.
+// dailyReport breaks usage down by day. With --label or --fp it covers that
+// one network; with neither it sums every network into the same day buckets,
+// which is the number that answers "did my usage spike this week" regardless
+// of where it happened.
 func dailyReport(w io.Writer, store *Store, samples []Sample, days int, label, fp string) error {
 	key := fp
 	if key == "" && label != "" {
@@ -74,31 +75,30 @@ func dailyReport(w io.Writer, store *Store, samples []Sample, days int, label, f
 			return fmt.Errorf("no network labeled %q", label)
 		}
 	}
-	if key == "" {
-		key = HeaviestKey(samples)
-		if key == "" {
-			return fmt.Errorf("no samples recorded yet")
+
+	scoped := samples
+	name := "All networks"
+	if key != "" {
+		scoped = nil
+		for _, s := range samples {
+			if s.FPKey == key {
+				scoped = append(scoped, s)
+			}
 		}
-	}
 
-	var scoped []Sample
-	for _, s := range samples {
-		if s.FPKey == key {
-			scoped = append(scoped, s)
+		labels, err := store.Labels()
+		if err != nil {
+			return err
 		}
+		name = labels[key]
+		if name == "" {
+			name = key
+		}
+	} else if len(samples) == 0 {
+		return fmt.Errorf("no samples recorded yet")
 	}
 
-	labels, err := store.Labels()
-	if err != nil {
-		return err
-	}
-	name := labels[key]
-	if name == "" {
-		name = key
-	}
-
-	now := time.Now()
-	dayTotals := Daily(scoped, days, now)
+	dayTotals := Daily(scoped, days, time.Now())
 	return WriteDaily(w, name, dayTotals, SummarizeDaily(dayTotals))
 }
 

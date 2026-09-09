@@ -63,7 +63,8 @@ Network                       Today                7 days              All time
 ─────────────  ────────────────────  ────────────────────  ────────────────────
 Home               ↓ 39 GB ↑ 2.9 GB      ↓ 196 GB ↑ 13 GB      ↓ 1.0 TB ↑ 82 GB
 Phone hotspot     ↓ 1.7 GB ↑ 200 MB     ↓ 5.8 GB ↑ 744 MB     ↓ 5.8 GB ↑ 744 MB
-(discarded: 0.3% — 14 samples, 2 sleep/wake, 1 network-switch)
+─────────────  ────────────────────  ────────────────────  ────────────────────
+Total              ↓ 41 GB ↑ 3.1 GB      ↓ 201 GB ↑ 14 GB      ↓ 1.0 TB ↑ 83 GB
 ```
 
 `doctor` also reports what is in the database: sample count, discard rate, the
@@ -77,10 +78,10 @@ wifimeter uninstall           # remove agent and binary, keep the database
 wifimeter uninstall --wipe    # also delete the database
 ```
 
-To see the shape of one network's usage rather than a total:
+To see the shape of usage over time rather than a total:
 
 ```sh
-wifimeter report --daily --label "Phone hotspot"   # or --fp KEY, or neither for the heaviest
+wifimeter report --daily --label "Phone hotspot" # or --fp KEY, or neither for all networks
 wifimeter report --daily --days 30
 ```
 
