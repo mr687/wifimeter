@@ -1,0 +1,6 @@
+en0: flags=8823<UP,BROADCAST,SMART,SIMPLEX,MULTICAST> mtu 1500
+	options=6460<TSO4,TSO6,CHANNEL_IO,PARTIAL_CSUM,ZEROINVERT_CSUM>
+	ether 00:00:5e:00:53:0a
+	nd6 options=201<PERFORMNUD,DAD>
+	media: autoselect
+	status: inactive

@@ -1,0 +1,1 @@
+? (192.0.2.1) at (incomplete) on en0 ifscope [ethernet]

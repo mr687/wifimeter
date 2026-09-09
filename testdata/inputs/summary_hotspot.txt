@@ -1,0 +1,20 @@
+<dictionary> {
+	IPv4 : <array> {
+		0 : {
+			ConfigMethod : DHCP
+			Configuration : <dictionary> {
+				Router : 192.0.2.1
+				SubnetMask : 255.255.255.0
+			}
+			IPv4 address : 192.0.2.100
+			DHCP ServerID : 192.0.2.1
+			DHCP LeaseTime : 3599
+			DHCP DomainNameServer : 192.0.2.1
+		}
+	}
+	SSID : <redacted>
+	BSSID : <redacted>
+	vendor_specific: ANDROID_METERED
+	router (ip_mult): {192.0.2.1}
+	subnet_mask (ip): 255.255.255.0
+}

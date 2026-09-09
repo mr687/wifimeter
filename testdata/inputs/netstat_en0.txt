@@ -1,0 +1,4 @@
+Name  Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll
+en0   1500  <Link#5>    00:00:5e:00:53:0a  1234567     0  987654321   765432     0   123456789     0
+en0   1500  192.0.2/24  192.0.2.100    1234567     -  987654321   765432     -   123456789     -
+en0   1500  fe80::%en0/64                      123     -      45678       45     -       12345     -

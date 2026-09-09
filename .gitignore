@@ -1,0 +1,14 @@
+# build output
+/wifimeter
+wifimeter-arm64
+wifimeter-amd64
+
+# local database
+*.db
+*.db-wal
+*.db-shm
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/

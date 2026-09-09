@@ -1,0 +1,5 @@
+Network                       Today                7 days              All time
+─────────────  ────────────────────  ────────────────────  ────────────────────
+Home               ↓ 39 GB ↑ 2.9 GB      ↓ 196 GB ↑ 13 GB      ↓ 1.0 TB ↑ 82 GB
+Phone hotspot     ↓ 1.7 GB ↑ 200 MB     ↓ 5.8 GB ↑ 744 MB     ↓ 5.8 GB ↑ 744 MB
+(discarded: 37.5% — 3 samples, 1 network-switch, 2 sleep/wake)

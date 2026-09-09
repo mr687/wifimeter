@@ -1,0 +1,17 @@
+<dictionary> {
+	IPv4 : <array> {
+		0 : {
+			ConfigMethod : DHCP
+			Configuration : <dictionary> {
+				Router : 198.51.100.1
+				SubnetMask : 255.255.255.0
+			}
+			IPv4 address : 198.51.100.42
+			DHCP ServerID : 198.51.100.1
+		}
+	}
+	SSID : <redacted>
+	BSSID : <redacted>
+	router (ip_mult): {198.51.100.1}
+	subnet_mask (ip): 255.255.255.0
+}

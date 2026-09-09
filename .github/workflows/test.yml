@@ -1,0 +1,21 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # net_darwin.go is excluded on other platforms by filename, so the package
+    # only compiles on darwin.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: '1.27'
+      - run: gofmt -l .
+      - run: go vet ./...
+      - run: go test ./...
+      - run: CGO_ENABLED=0 go build -ldflags="-s -w" -o wifimeter .
