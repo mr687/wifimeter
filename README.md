@@ -40,16 +40,6 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
 Want to check what you downloaded? Each release ships a `SHA256SUMS` next to
 the binaries.
 
-
-### Homebrew
-
-```sh
-brew install mr687/tap/wifimeter
-```
-
-Homebrew clears the quarantine flag, so no `xattr` step is needed. It does not
-start the agent, so run `wifimeter install` once to load it.
-
 ### Build from source
 
 ```sh
@@ -117,8 +107,6 @@ wifimeter version     # wifimeter v1.0.1 (darwin/arm64)
 - **Travel SIM and eSIM.** Same problem, smaller scale: one number per network.
 
 It will not name the app that used the data, only the network that carried it.
-
-
 
 ## How it works
 
