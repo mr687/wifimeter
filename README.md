@@ -66,9 +66,9 @@ Phone hotspot     ↓ 1.7 GB ↑ 200 MB     ↓ 5.8 GB ↑ 744 MB     ↓ 5.8 GB
 (discarded: 0.3% — 14 samples, 2 sleep/wake, 1 network-switch)
 ```
 
-Alongside those reads, `doctor` reports what is in the database: sample count,
-discard rate, the oldest and newest samples, database size, and whether the
-agent is loaded. It is the thing to run first when a number looks wrong.
+`doctor` also reports what is in the database: sample count, discard rate, the
+oldest and newest samples, database size, and whether the agent is loaded. It is
+the thing to run first when a number looks wrong.
 
 To stop collecting:
 
@@ -76,8 +76,6 @@ To stop collecting:
 wifimeter uninstall           # remove agent and binary, keep the database
 wifimeter uninstall --wipe    # also delete the database
 ```
-
-## Use cases
 
 To see the shape of one network's usage rather than a total:
 
@@ -95,6 +93,8 @@ To check which build you have:
 ```sh
 wifimeter version     # wifimeter v1.0.1 (darwin/arm64)
 ```
+
+## Use cases
 
 - **Sizing a hotspot plan.** Tethering away from Wi-Fi and unsure how much
   quota to buy? Run it for a normal week; the 7-day column is your answer.
