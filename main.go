@@ -15,6 +15,7 @@ func usage() {
 
   run                      sample in a loop (launchd KeepAlive)
   report [--days 7]        per-network totals
+  report --daily [--label NAME | --fp KEY]
   label [--fp KEY] "name"  name a network
   doctor                   zero-permission self-check
   install                  write the launchd agent and load it
