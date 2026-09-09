@@ -5,7 +5,9 @@ AGENT := gui/$(shell id -u)/com.user.wifimeter
 
 # CGO off keeps the binary linked against libSystem + libresolv only.
 # No GOPROXY override: a fresh clone must be able to fetch deps.
-GO_BUILD := CGO_ENABLED=0 go build -ldflags="-s -w"
+# VERSION falls back to "dev" outside a git checkout.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GO_BUILD := CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$(VERSION)"
 
 .PHONY: build test vet fmt check install restart logs uninstall clean
 

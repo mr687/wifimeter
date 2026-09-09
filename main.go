@@ -19,6 +19,7 @@ func usage() {
   label [--fp KEY] "name"  name a network
   doctor                   zero-permission self-check
   install                  write the launchd agent and load it
+  version                  print the installed version
   uninstall [--wipe]       unload and remove the agent and binary
 
   -iface applies to run, doctor, and label; it defaults to the detected
@@ -47,6 +48,8 @@ func main() {
 		err = installCmd()
 	case "uninstall":
 		err = uninstallCmd(os.Args[2:])
+	case "version":
+		err = versionCmd()
 	default:
 		usage()
 		os.Exit(2)

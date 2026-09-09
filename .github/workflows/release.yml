@@ -23,9 +23,9 @@ jobs:
       # The amd64 build is named x86_64 to match what `uname -m` prints, which
       # is what the install command in the README substitutes into the URL.
       - name: Build arm64
-        run: CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o wifimeter-darwin-arm64 .
+        run: CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o wifimeter-darwin-arm64 .
       - name: Build x86_64
-        run: CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o wifimeter-darwin-x86_64 .
+        run: CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o wifimeter-darwin-x86_64 .
 
       - name: Checksums
         run: shasum -a 256 wifimeter-darwin-arm64 wifimeter-darwin-x86_64 > SHA256SUMS
