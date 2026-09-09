@@ -201,5 +201,14 @@ func doctorCmd(args []string) error {
 	if !fp.Complete() {
 		fmt.Fprintf(w, "\nnetwork is not fully identified; samples will be discarded\n")
 	}
-	return nil
+
+	dbPath, err := DefaultDBPath()
+	if err != nil {
+		return err
+	}
+	stats, err := collectDBStats(dbPath, agentLabel)
+	if err != nil {
+		return err
+	}
+	return writeDBStats(w, stats)
 }
