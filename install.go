@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const agentLabel = "com.github.mr687.wifimeter"
@@ -21,6 +22,24 @@ func plistPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, "Library", "LaunchAgents", agentLabel+".plist"), nil
+}
+
+// dataDir is the directory holding usage.db and its WAL sidecars.
+func dataDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "Library", "Application Support", "WifiMeter"), nil
+}
+
+// binPath is where the Makefile installs the binary.
+func binPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "bin", "wifimeter"), nil
 }
 
 func installCmd() error {
@@ -72,7 +91,7 @@ func installCmd() error {
 }
 
 // uninstall removes the agent and the installed binary. The database and its
-// WAL sidecars are kept unless --wipe is passed.
+// WAL sidecars are kept unless --wipe is passed, which prompts first.
 func uninstallCmd(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
 	wipe := fs.Bool("wipe", false, "also delete the database and collected history")
@@ -96,11 +115,15 @@ func uninstallCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !*wipe {
+	switch {
+	case !*wipe:
 		fmt.Printf("kept %s (pass --wipe to delete)\n", data)
-	} else if err := os.RemoveAll(data); err != nil {
-		return err
-	} else {
+	case !confirm("delete " + data + " and all collected history? [y/N] "):
+		fmt.Println("aborted")
+	case true:
+		if err := os.RemoveAll(data); err != nil {
+			return err
+		}
 		fmt.Printf("removed %s\n", data)
 	}
 
@@ -116,20 +139,18 @@ func uninstallCmd(args []string) error {
 	return nil
 }
 
-// dataDir is the directory holding usage.db and its WAL sidecars.
-func dataDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+// confirm reads one line and accepts only y or yes. EOF, a closed stdin, or
+// anything else is a no, so a script never wipes by accident.
+func confirm(prompt string) bool {
+	fmt.Print(prompt)
+	var answer string
+	if _, err := fmt.Scanln(&answer); err != nil {
+		fmt.Println()
+		return false
 	}
-	return filepath.Join(home, "Library", "Application Support", "WifiMeter"), nil
-}
-
-// binPath is where the Makefile installs the binary.
-func binPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y", "yes":
+		return true
 	}
-	return filepath.Join(home, "bin", "wifimeter"), nil
+	return false
 }

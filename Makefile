@@ -4,9 +4,8 @@ TARGET := $(INSTALL_DIR)/$(BINARY)
 AGENT := gui/$(shell id -u)/com.user.wifimeter
 
 # CGO off keeps the binary linked against libSystem + libresolv only.
-# GOPROXY=off works because modernc.org/sqlite is already in the module cache;
-# drop it if the cache is ever cleared.
-GO_BUILD := CGO_ENABLED=0 GOPROXY=off go build -ldflags="-s -w"
+# No GOPROXY override: a fresh clone must be able to fetch deps.
+GO_BUILD := CGO_ENABLED=0 go build -ldflags="-s -w"
 
 .PHONY: build test vet fmt check install restart logs uninstall clean
 

@@ -1,13 +1,13 @@
 # wifimeter
 
-Per-network bandwidth accounting for macOS, as a single static binary that
-never asks for Location Services, sudo, or packet capture.
+Bandwidth accounting per Wi-Fi network, for macOS. One static binary that asks
+for nothing: no Location Services, no sudo, no packet capture.
 
-Commercial tools that show per-network usage all request Location Services.
-They have to: macOS has withheld the SSID from unentitled processes since
-14.4, and a bare `launchd` agent can never obtain it because there is no UI to
-present the prompt from. `wifimeter` takes a different route and identifies the
-network by its **gateway** instead: IP, subnet mask, and gateway MAC.
+Every commercial tool that shows per-network usage asks for Location Services,
+and they have no choice in the matter. macOS has withheld the SSID from
+unentitled processes since 14.4, and a `launchd` agent can never get it because
+there is no window to present the prompt from. So `wifimeter` identifies the
+network by its gateway instead: IP, subnet mask, and gateway MAC.
 
 ## Install
 
@@ -35,8 +35,8 @@ Phone hotspot     ↓ 1.7 GB ↑ 200 MB     ↓ 5.8 GB ↑ 744 MB     ↓ 5.8 GB
 (discarded: 0.3% — 14 samples, 2 sleep/wake, 1 network-switch)
 ```
 
-`doctor` reads nothing from the database and is the first thing to run when
-something looks wrong.
+`doctor` touches no stored data, which makes it the thing to run first when a
+number looks wrong.
 
 To stop collecting:
 
@@ -55,39 +55,43 @@ wifimeter uninstall --wipe    # also delete the database
 | Gateway MAC | `arp -n <gateway>` | none |
 | DHCP vendor class | `ipconfig getsummary <iface>` | none |
 
-`-ifscope` is what keeps a VPN from being metered instead of the network: with
-Cloudflare WARP running, the *system* default route points at `utun7`, and only
-the scoped lookup returns the actual Wi-Fi gateway.
+The `-ifscope` flag is what keeps a VPN from being metered in place of the
+network. Any active tunnel moves the system default route onto a `utun`
+interface, and only the scoped lookup still returns the Wi-Fi gateway you are
+actually on.
 
-Only the physical Wi-Fi interface is read. Tunnels are encapsulated inside its
-frames, so adding `utun*` would double count; `awdl0`/`llw0` share the radio
-without being network usage.
+Only the physical Wi-Fi interface gets read. Tunnel traffic is encapsulated
+inside its frames, so adding `utun*` would count it twice. The `awdl0` and
+`llw0` interfaces share the radio for AirDrop and carry nothing that counts as
+network usage.
 
-Never used: `tcpdump`, CoreWLAN, `system_profiler`, or a Network Extension.
+`tcpdump`, CoreWLAN, `system_profiler`, and Network Extension filters are all
+unused.
 
-Samples are taken every 10s and stored in SQLite. A sample is discarded, not
-guessed at, when the link is down, the gateway is unknown, the network changed,
-the counters went backwards, or more than 50s elapsed since the last one. A
-dropped sample costs ten seconds; a phantom multi-gigabyte sample would ruin
-the day's totals.
+Samples land in SQLite every 10 seconds. One gets discarded rather than guessed
+at when the link is down, the gateway is unknown, the network changed, the
+counters moved backwards, or more than 50 seconds passed since the previous
+sample. Losing a sample costs ten seconds. Accepting a bogus one would put
+gigabytes into a day's totals that nobody transferred.
 
 ## Limits
 
-- **No true SSID.** Two SSIDs behind the same gateway (2.4 and 5 GHz bands,
-  guest vs main) collapse to one fingerprint, since they share the gateway MAC.
+- **No true SSID.** Two SSIDs behind one gateway collapse into a single
+  fingerprint, because they share the gateway MAC. That includes the 2.4 and
+  5 GHz bands of the same router, and guest networks.
 - **No per-app breakdown.** That needs `nettop` or a Network Extension filter.
-- **10s granularity.** A network joined and left inside one interval may be
-  missed.
-- **Sleep detection is a heuristic**, based on the gap between samples.
-- **macOS only.** Every command above is BSD-flavored. `go build` works
-  anywhere; the tool does not.
+- **10s granularity.** A network joined and left inside one interval can be
+  missed entirely.
+- **Sleep detection is a heuristic**, inferred from the gap between samples.
+- **macOS only.** Each command above is BSD-flavored. The code compiles
+  anywhere Go runs; the tool does not work anywhere else.
 
 ## Privacy
 
-The database stores, per network: gateway IP, subnet, gateway MAC, DHCP vendor
-class, and timestamped byte deltas. Gateway MACs can identify places you have
-been, so treat `usage.db` as sensitive. It lives at
-`~/Library/Application Support/WifiMeter/usage.db` and never leaves the machine.
+Each network's row holds its gateway IP, subnet, gateway MAC, DHCP vendor
+class, and timestamped byte deltas. Gateway MACs can pin down places you have
+been, so treat `usage.db` as sensitive. It stays at
+`~/Library/Application Support/WifiMeter/usage.db`.
 
 ## Development
 
@@ -96,13 +100,12 @@ make check      # gofmt, vet, test
 make test
 ```
 
-Parsing is covered by golden tests over captured command output in
-`testdata/`. Run `go test -update` to rewrite the goldens after an intentional
-change.
+Golden tests over captured command output cover the parsing, in `testdata/`.
+After an intentional change, `go test -update` rewrites the goldens.
 
-Builds with `CGO_ENABLED=0` and links only `libSystem` and `libresolv`, so the
-binary has no Homebrew dependency. SQLite comes from `modernc.org/sqlite`,
-which is pure Go.
+The build runs with `CGO_ENABLED=0` and links only `libSystem` and
+`libresolv`, so the binary carries no Homebrew dependency. SQLite comes from
+`modernc.org/sqlite`, which is pure Go.
 
 ## License
 
