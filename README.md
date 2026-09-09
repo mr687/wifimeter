@@ -45,7 +45,66 @@ wifimeter uninstall           # remove agent and binary, keep the database
 wifimeter uninstall --wipe    # also delete the database
 ```
 
+## Use cases
+
+- **Sizing a hotspot plan.** Tethering away from Wi-Fi and unsure how much
+  quota to buy? Run it for a normal week; the 7-day column is your answer.
+- **Checking a metered bill.** Counters are taken at the network layer, the
+  same place your carrier bills from, so a mismatch is worth a phone call.
+- **Finding where the data went.** Per-network totals narrow a vanished
+  allowance down to the network you were on.
+- **Shared household links.** Totals say whether the plan fits everyone using
+  it. Two SSIDs behind one gateway do count together.
+- **Travel SIM and eSIM.** Same problem, smaller scale: one number per network.
+
+It will not name the app that used the data, only the network that carried it.
+
+
+
 ## How it works
+
+```mermaid
+flowchart TB
+    subgraph K["Kernel — free, exact, no privilege"]
+        NS["netstat -ibn -I IFACE<br/>cumulative byte counters"]
+    end
+
+    subgraph S["Samplers — unprivileged, every 10s"]
+        RT["route -n get default -ifscope"]
+        AR["arp -n GATEWAY"]
+        IF["ifconfig"]
+        IP["ipconfig getsummary"]
+    end
+
+    subgraph B["wifimeter — one static binary"]
+        FP["Fingerprint<br/>gateway IP + subnet + gateway MAC"]
+        GATE{"Delta gate"}
+        LOOP["run loop<br/>launchd KeepAlive"]
+    end
+
+    DB[("SQLite<br/>usage.db")]
+    CLI["report · label · doctor"]
+
+    LOOP --> NS
+    LOOP --> RT
+    LOOP --> IF
+    LOOP --> IP
+    RT --> AR --> FP
+    IP --> FP
+    NS --> GATE
+    FP --> GATE
+    GATE -->|"valid"| DB
+    GATE -->|"discarded, reason kept"| DB
+    DB --> CLI
+
+    style K fill:#e8f5e9
+    style S fill:#e3f2fd
+    style B fill:#fff8e1
+    style DB fill:#e0f7fa
+```
+
+The SSID never appears in that diagram, which is the point. It cannot be read
+without Location Services, so the gateway stands in for it.
 
 | Read | Source | Privilege |
 |---|---|---|
