@@ -11,9 +11,9 @@ import (
 	"time"
 )
 
-// runDaemon samples until told to stop. It keeps its baseline in memory: under
-// launchd the process is restarted freely, and the first sample after a start
-// is discarded by the gate, so a restart never produces a giant first delta.
+// runDaemon samples until told to stop. The baseline is in-memory, so a
+// restart begins with none: the gate discards the first sample per start,
+// which is what keeps a respawn from producing a giant first delta.
 func runDaemon(store *Store, interval time.Duration, iface string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

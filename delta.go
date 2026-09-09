@@ -53,8 +53,9 @@ type Sample struct {
 	Reason Reason
 }
 
-// Baseline is the previous reading. It persists across restarts so launchd
-// respawning the process does not produce a giant first delta.
+// Baseline is the previous reading. It lives in memory only; a restart starts
+// empty, and ReasonFirst discards that first interval so it cannot attribute
+// the interface's whole history to one sample.
 type Baseline struct {
 	Counters
 	Set   bool

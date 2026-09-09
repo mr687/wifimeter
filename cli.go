@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 )
@@ -13,6 +14,9 @@ import (
 func reportCmd(args []string) error {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
 	days := fs.Int("days", 7, "rolling window in days")
+	daily := fs.Bool("daily", false, "break one network down by day")
+	label := fs.String("label", "", "network to break down by name")
+	fp := fs.String("fp", "", "network to break down by fingerprint key")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -27,11 +31,15 @@ func reportCmd(args []string) error {
 	}
 	defer store.Close()
 
-	// Every sample, oldest first; the windows decide what is shown.
 	samples, err := store.SamplesSince(time.Unix(0, 0))
 	if err != nil {
 		return err
 	}
+
+	if *daily {
+		return dailyReport(os.Stdout, store, samples, *days, *label, *fp)
+	}
+
 	labels, err := store.Labels()
 	if err != nil {
 		return err
@@ -44,6 +52,54 @@ func reportCmd(args []string) error {
 	}
 	rep.Total, rep.Discarded = total, discarded
 	return rep.Write(os.Stdout)
+}
+
+// dailyReport breaks a single network down by day. Breaking every network
+// down at once would run to hundreds of lines, so with no --label or --fp it
+// picks the network that has carried the most.
+func dailyReport(w io.Writer, store *Store, samples []Sample, days int, label, fp string) error {
+	key := fp
+	if key == "" && label != "" {
+		labels, err := store.Labels()
+		if err != nil {
+			return err
+		}
+		for k, v := range labels {
+			if v == label {
+				key = k
+				break
+			}
+		}
+		if key == "" {
+			return fmt.Errorf("no network labeled %q", label)
+		}
+	}
+	if key == "" {
+		key = HeaviestKey(samples)
+		if key == "" {
+			return fmt.Errorf("no samples recorded yet")
+		}
+	}
+
+	var scoped []Sample
+	for _, s := range samples {
+		if s.FPKey == key {
+			scoped = append(scoped, s)
+		}
+	}
+
+	labels, err := store.Labels()
+	if err != nil {
+		return err
+	}
+	name := labels[key]
+	if name == "" {
+		name = key
+	}
+
+	now := time.Now()
+	dayTotals := Daily(scoped, days, now)
+	return WriteDaily(w, name, dayTotals, SummarizeDaily(dayTotals))
 }
 
 // windowsFor builds today / N days / all time, counted from local midnight.
