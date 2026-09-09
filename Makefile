@@ -1,7 +1,7 @@
 BINARY := wifimeter
 INSTALL_DIR := $(HOME)/bin
 TARGET := $(INSTALL_DIR)/$(BINARY)
-AGENT := gui/$(shell id -u)/com.user.wifimeter
+AGENT := gui/$(shell id -u)/com.github.mr687.wifimeter
 
 # CGO off keeps the binary linked against libSystem + libresolv only.
 # No GOPROXY override: a fresh clone must be able to fetch deps.
