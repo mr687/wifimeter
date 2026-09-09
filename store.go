@@ -64,6 +64,12 @@ func (s *Store) init() error {
 	if _, err := s.db.Exec(`PRAGMA synchronous=NORMAL;`); err != nil {
 		return fmt.Errorf("setting synchronous: %w", err)
 	}
+	// Wait instead of failing at once when another writer holds the lock.
+	// SetMaxOpenConns(1) only serialises connections inside this process, so
+	// it does nothing against a second one.
+	if _, err := s.db.Exec(`PRAGMA busy_timeout=5000;`); err != nil {
+		return fmt.Errorf("setting busy_timeout: %w", err)
+	}
 
 	const schema = `
 CREATE TABLE IF NOT EXISTS samples (

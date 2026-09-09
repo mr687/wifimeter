@@ -63,6 +63,12 @@ func runCmd(args []string) error {
 		return err
 	}
 
+	lock, err := acquireDaemonLock()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
 	path, err := DefaultDBPath()
 	if err != nil {
 		return err
