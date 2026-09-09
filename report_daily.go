@@ -143,22 +143,3 @@ func bar(value, max uint64, width int) string {
 	}
 	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }
-
-// HeaviestKey picks the network with the most downloaded bytes, used when
-// --daily runs with neither --label nor --fp.
-func HeaviestKey(samples []Sample) string {
-	totals := make(map[string]uint64)
-	for _, s := range samples {
-		if s.Valid {
-			totals[s.FPKey] += s.RX
-		}
-	}
-	best := ""
-	var bestRX uint64
-	for key, rx := range totals {
-		if rx > bestRX || (rx == bestRX && key < best) {
-			best, bestRX = key, rx
-		}
-	}
-	return best
-}

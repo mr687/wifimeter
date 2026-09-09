@@ -115,6 +115,30 @@ func (r Report) Write(w io.Writer) error {
 		fmt.Fprintln(&b)
 	}
 
+	// Total across every network, so the columns can be read without adding
+	// them up by hand. Skipped when there are no rows, since a row of zeroes
+	// says nothing beyond the empty table above it.
+	if len(r.Rows) > 0 {
+		totals := make([]uint64, 2*len(r.Windows))
+		for _, row := range r.Rows {
+			for i := range totals {
+				totals[i] += row.Windows[i]
+			}
+		}
+
+		fmt.Fprintf(&b, "%-*s", nameWidth, strings.Repeat("─", nameWidth))
+		for range r.Windows {
+			fmt.Fprintf(&b, "  %s", strings.Repeat("─", colWidth))
+		}
+		fmt.Fprintln(&b)
+
+		fmt.Fprintf(&b, "%-*s", nameWidth, "Total")
+		for i := range r.Windows {
+			fmt.Fprintf(&b, "  %*s", colWidth, FormatBytes(totals[2*i], totals[2*i+1]))
+		}
+		fmt.Fprintln(&b)
+	}
+
 	if r.Total > 0 {
 		fmt.Fprintf(&b, "(discarded: %.1f%% — %d samples, %s)\n",
 			float64(r.Discarded)/float64(r.Total)*100, r.Discarded, r.reasonSummary())

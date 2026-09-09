@@ -18,13 +18,13 @@ func dailyFixtures(now time.Time) []Sample {
 	}
 
 	return []Sample{
-		// heaviest network, spread over the last four days
+		// one network, spread over the last four days
 		{At: day(0), FPKey: hot, RX: 700 << 20, TX: 10 << 20, Valid: true},
 		{At: day(1), FPKey: hot, RX: 3 << 30, TX: 40 << 20, Valid: true},
 		{At: day(2), FPKey: hot, RX: 900 << 20, TX: 20 << 20, Valid: true},
 		{At: day(3), FPKey: hot, RX: 500 << 20, TX: 5 << 20, Valid: true},
 
-		// a lighter network, to prove HeaviestKey picks the other one
+		// a second network, which the unfiltered view must include
 		{At: day(0), FPKey: quiet, RX: 10 << 20, TX: 1 << 20, Valid: true},
 
 		// discarded, and must not appear in any daily figure
@@ -101,6 +101,38 @@ func TestSummarizeDaily(t *testing.T) {
 	}
 }
 
+// With no --label or --fp the whole sample set goes in, so a lighter network
+// must land in the same day buckets instead of being dropped. Summing before
+// bucketing is the point: the old code picked one key and reported only that.
+func TestDailyAllNetworks(t *testing.T) {
+	now := time.Date(2026, 9, 9, 18, 0, 0, 0, time.UTC)
+	got := Daily(dailyFixtures(now), 7, now)
+
+	// Newest day carries both networks: 700 MiB from hot, 10 MiB from quiet.
+	if want := uint64(700+10) << 20; got[6].RX != want {
+		t.Errorf("newest day = %d, want %d", got[6].RX, want)
+	}
+	if got[6].TX != 11<<20 {
+		t.Errorf("newest day TX = %d, want %d", got[6].TX, 11<<20)
+	}
+
+	// Days only the lighter network touched must not read as empty.
+	var total uint64
+	for _, d := range got {
+		total += d.RX
+	}
+	if want := uint64((700 + 900 + (3 << 10) + 500 + 10) << 20); total != want {
+		t.Errorf("total = %d, want %d", total, want)
+	}
+
+	// The discarded 99 GiB sample still must not leak in.
+	for _, d := range got {
+		if d.RX >= 99<<30 {
+			t.Errorf("discarded sample leaked into %v: %d", d.Day, d.RX)
+		}
+	}
+}
+
 func TestSummarizeDailyShortRange(t *testing.T) {
 	// Fewer than seven days: the fallback sums what there is instead of
 	// reporting a zero week.
@@ -138,18 +170,6 @@ func TestWriteDaily(t *testing.T) {
 	// One line per day, plus the header, blank line, and summary.
 	if lines := strings.Count(out, "\n"); lines != 7+4 {
 		t.Errorf("got %d lines, want %d:\n%s", lines, 7+4, out)
-	}
-}
-
-func TestHeaviestKey(t *testing.T) {
-	now := time.Date(2026, 9, 9, 18, 0, 0, 0, time.UTC)
-	got := HeaviestKey(dailyFixtures(now))
-	want := "192.0.2.1|255.255.255.0|00:00:5e:00:53:01"
-	if got != want {
-		t.Errorf("HeaviestKey = %q, want %q", got, want)
-	}
-	if HeaviestKey(nil) != "" {
-		t.Error("no samples should give an empty key")
 	}
 }
 
