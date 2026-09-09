@@ -11,6 +11,38 @@ network by its gateway instead: IP, subnet mask, and gateway MAC.
 
 ## Install
 
+### Download a binary
+
+Two commands, whatever your Mac. They pick the right artifact and save it as
+`~/bin/wifimeter`:
+
+```sh
+mkdir -p ~/bin
+curl -L -o ~/bin/wifimeter \
+  "https://github.com/mr687/wifimeter/releases/latest/download/wifimeter-darwin-$(uname -m)"
+chmod +x ~/bin/wifimeter
+xattr -d com.apple.quarantine ~/bin/wifimeter
+~/bin/wifimeter doctor
+```
+
+`uname -m` prints `arm64` on Apple Silicon and `x86_64` on Intel, which matches
+the artifact names. The `xattr` line removes the flag macOS sets on anything
+downloaded; without it Gatekeeper refuses to run the binary, since these are
+not signed with a Developer ID.
+
+Add `~/bin` to your `PATH` if it is not there already, then `wifimeter` works
+from anywhere. On the default zsh shell:
+
+```sh
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
+```
+
+Want to check what you downloaded? Each release ships a `SHA256SUMS` next to
+the binaries.
+
+
+### Build from source
+
 ```sh
 git clone https://github.com/mr687/wifimeter
 cd wifimeter
