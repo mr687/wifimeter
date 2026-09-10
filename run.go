@@ -57,8 +57,9 @@ func runDaemon(store *Store, interval time.Duration, iface string) error {
 // lookback from today would never reach a database with months of backlog.
 //
 // Deleting and rolling up share a transaction, so a crash mid-pass cannot leave
-// a day dropped but never folded in. MaxRollupLookback bounds each pass, so one
-// call stays short no matter how much history is waiting.
+// a day dropped but never folded in. Each pass handles at most
+// MaxRollupLookback days, so a database with years of backlog is drained over
+// several passes rather than blocking one call for minutes.
 func rollupClosedDays(store *Store, now time.Time) error {
 	today := startOfDay(now)
 	cut := RetentionCut(now)
@@ -71,7 +72,12 @@ func rollupClosedDays(store *Store, now time.Time) error {
 		return nil
 	}
 
-	for d := startOfDay(oldest); d.Before(today); d = d.AddDate(0, 0, 1) {
+	limit := startOfDay(oldest).AddDate(0, 0, int(MaxRollupLookback/(24*time.Hour)))
+	if limit.After(today) {
+		limit = today
+	}
+
+	for d := startOfDay(oldest); d.Before(limit); d = d.AddDate(0, 0, 1) {
 		// Days still inside the retention window are folded in but kept: the
 		// report reads them from source, and they are not complete yet.
 		if d.Before(cut) {

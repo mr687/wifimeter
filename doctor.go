@@ -3,6 +3,7 @@ package main
 // doctor's database checks: sample counts, discard rate, size, agent state.
 
 import (
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
@@ -84,10 +85,41 @@ func collectDBStats(dbPath, label string) (DBStats, error) {
 		return s, err
 	}
 
+	// History moves into the rollups once retention drops the raw rows, so the
+	// range spans both. Reading only samples would report the retention window
+	// however much is actually stored.
+	//
+	// Day keys come back as text and are parsed in Go rather than converted in
+	// SQL: strftime('%s', day) returns NULL for 'YYYY-MM-DD' here, which
+	// silently drops the whole branch.
 	var oldest, newest *int64
 	if err := store.db.QueryRow(`SELECT MIN(ts), MAX(ts) FROM samples`).Scan(&oldest, &newest); err != nil {
 		return s, err
 	}
+
+	var oldestDay, newestDay sql.NullString
+	if err := store.db.QueryRow(`SELECT MIN(day), MAX(day) FROM daily_usage`).Scan(&oldestDay, &newestDay); err != nil {
+		return s, err
+	}
+
+	loc := time.Now().Location()
+	for _, day := range []sql.NullString{oldestDay, newestDay} {
+		if !day.Valid {
+			continue
+		}
+		parsed, err := time.ParseInLocation("2006-01-02", day.String, loc)
+		if err != nil {
+			return s, fmt.Errorf("parsing rolled day %q: %w", day.String, err)
+		}
+		ts := parsed.Unix()
+		if oldest == nil || ts < *oldest {
+			oldest = &ts
+		}
+		if newest == nil || ts > *newest {
+			newest = &ts
+		}
+	}
+
 	if oldest != nil {
 		s.Oldest = time.Unix(*oldest, 0)
 	}
