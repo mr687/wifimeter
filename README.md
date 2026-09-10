@@ -92,7 +92,7 @@ that ran several times higher, and that is the week that exhausts an allowance.
 To check which build you have:
 
 ```sh
-wifimeter version     # wifimeter v1.0.1 (darwin/arm64)
+wifimeter version     # wifimeter v1.0.3 (darwin/arm64)
 ```
 
 ## Use cases
