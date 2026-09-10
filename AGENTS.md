@@ -25,6 +25,8 @@ wifimeter report            # per-network totals, today / N days / all time
 wifimeter report --daily    # day-by-day, all networks or one via --label/--fp
 wifimeter label             # name a gateway fingerprint
 wifimeter doctor            # zero-permission self-check and database health
+wifimeter merge A --into B  # report network A as network B
+wifimeter unmerge A         # undo a merge
 wifimeter compact           # VACUUM, to give back pages retention freed
 wifimeter uninstall         # unload the agent and remove its plist
 ```
@@ -75,7 +77,12 @@ choice.
 5. **One sampler at a time.** The `flock` lives beside the database, not in
    `/tmp` (which is cleared periodically). Two writers lose samples to
    `SQLITE_BUSY` and duplicate the rest.
-6. **CGO stays off.** SQLite comes from `modernc.org/sqlite` (pure Go) so the
+6. **A network's identity is its canonical fingerprint.** A hotspot that
+   rotates its gateway MAC is sampled as several fingerprints but is one
+   network. Historical rows keep the fingerprint they were recorded with;
+   `network_alias` resolves them at read time, so a merge is reversible by
+   deleting one row.
+7. **CGO stays off.** SQLite comes from `modernc.org/sqlite` (pure Go) so the
    binary carries no C toolchain dependency. Do not add a dependency that needs
    cgo.
 

@@ -17,6 +17,8 @@ func usage() {
   report [--days 7]        per-network totals
   report --daily [--label NAME | --fp KEY]
   label [--fp KEY] "name"  name a network
+  merge NAME --into NAME   report one network as another
+  unmerge NAME             undo a merge
   doctor                   zero-permission self-check
   install                  write the launchd agent and load it
   version                  print the installed version
@@ -51,6 +53,10 @@ func main() {
 		err = uninstallCmd(os.Args[2:])
 	case "compact":
 		err = compactCmd()
+	case "merge":
+		err = mergeCmd(os.Args[2:])
+	case "unmerge":
+		err = unmergeCmd(os.Args[2:])
 	case "version":
 		err = versionCmd()
 	default:

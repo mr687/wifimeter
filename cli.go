@@ -253,3 +253,78 @@ func pluralDays(n int) string {
 	}
 	return fmt.Sprintf("%d days", n)
 }
+
+// mergeCmd makes one network report as another, for a hotspot whose gateway
+// MAC rotates and so shows up as several fingerprints.
+func mergeCmd(args []string) error {
+	fs := flag.NewFlagSet("merge", flag.ExitOnError)
+	into := fs.String("into", "", "name of the network to merge into")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	src := fs.Arg(0)
+	if src == "" || *into == "" {
+		return fmt.Errorf("usage: wifimeter merge NAME --into NAME")
+	}
+	if src == *into {
+		return fmt.Errorf("cannot merge %q into itself", src)
+	}
+
+	path, err := DefaultDBPath()
+	if err != nil {
+		return err
+	}
+	store, err := Open(path)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	srcFP, err := store.FPForLabel(src)
+	if err != nil {
+		return err
+	}
+	dstFP, err := store.FPForLabel(*into)
+	if err != nil {
+		return err
+	}
+	if err := store.MergeNetworks(srcFP, dstFP); err != nil {
+		return err
+	}
+	fmt.Printf("merged %q into %q\n", src, *into)
+	return nil
+}
+
+// unmergeCmd restores a merged network as its own entry. The old name is not
+// restored, so it reports as a raw fingerprint until labeled again.
+func unmergeCmd(args []string) error {
+	if len(args) < 1 || args[0] == "" {
+		return fmt.Errorf("usage: wifimeter unmerge NAME")
+	}
+
+	path, err := DefaultDBPath()
+	if err != nil {
+		return err
+	}
+	store, err := Open(path)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	// The name is gone once merged, so resolve through the alias directly.
+	rows, err := store.Aliased()
+	if err != nil {
+		return err
+	}
+	for _, a := range rows {
+		if label, ok := store.labelOf(a.AliasOf); ok && label == args[0] {
+			if err := store.UnmergeNetwork(a.FP); err != nil {
+				return err
+			}
+			fmt.Printf("unmerged a network from %q\n", args[0])
+			return nil
+		}
+	}
+	return fmt.Errorf("no network is merged into %q", args[0])
+}

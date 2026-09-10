@@ -716,3 +716,167 @@ func TestDoctorRangeSpansRollups(t *testing.T) {
 		t.Errorf("oldest = %v, want around %v (40 days back)", stats.Oldest, old)
 	}
 }
+
+// A hotspot that rotates its gateway MAC is one network but several
+// fingerprints. Merging must collapse them in the report while leaving the
+// stored rows alone, so removing the alias restores the split for free.
+func TestMergeCombinesReport(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// RFC 5737 documentation ranges; nothing here is a real device.
+	first := "192.0.2.1|255.255.255.0|02:00:00:00:00:01"
+	second := "192.0.2.1|255.255.255.0|02:00:00:00:00:02"
+	other := "198.51.100.1|255.255.255.0|02:00:00:00:00:03"
+
+	now := time.Now()
+	for _, sm := range []Sample{
+		{At: now.Add(-2 * time.Hour), FPKey: first, RX: 1000, TX: 100, Valid: true},
+		{At: now.Add(-90 * time.Minute), FPKey: second, RX: 2000, TX: 200, Valid: true},
+		{At: now.Add(-time.Hour), FPKey: other, RX: 50, TX: 5, Valid: true},
+	} {
+		if err := s.InsertSample(sm); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetLabel(first, "Hotspot"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLabel(second, "Hotspot 2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLabel(other, "Cafe"); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := func() Report {
+		samples, err := s.SamplesForReport()
+		if err != nil {
+			t.Fatal(err)
+		}
+		labels, err := s.Labels()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Aggregate(samples, windowsFor(now, 7), labels)
+	}
+
+	if got := len(rep().Rows); got != 3 {
+		t.Fatalf("before merge: %d rows, want 3", got)
+	}
+
+	if err := s.MergeNetworks(second, first); err != nil {
+		t.Fatal(err)
+	}
+
+	after := rep()
+	if len(after.Rows) != 2 {
+		t.Fatalf("after merge: %d rows, want 2", len(after.Rows))
+	}
+	// The two hotspot fingerprints total 3000 down, 300 up.
+	var hot Row
+	found := false
+	for _, r := range after.Rows {
+		if r.Label == "Hotspot" {
+			hot, found = r, true
+		}
+	}
+	if !found {
+		t.Fatalf("no row labeled Hotspot; rows: %+v", after.Rows)
+	}
+	if hot.Windows[0] != 3000 || hot.Windows[1] != 300 {
+		t.Errorf("merged totals = %d/%d, want 3000/300", hot.Windows[0], hot.Windows[1])
+	}
+
+	// Historical rows keep their original fingerprint.
+	raw, err := s.SamplesSince(time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]bool{}
+	for _, sm := range raw {
+		keys[sm.FPKey] = true
+	}
+	if !keys[second] {
+		t.Error("source fingerprint vanished from stored rows")
+	}
+
+	// Unmerging restores the split without restoring the old name.
+	if err := s.UnmergeNetwork(second); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(rep().Rows); got != 3 {
+		t.Errorf("after unmerge: %d rows, want 3", got)
+	}
+}
+
+func TestMergeRejectsBadInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	a := "192.0.2.1|255.255.255.0|02:00:00:00:00:01"
+	if err := s.MergeNetworks(a, a); err == nil {
+		t.Error("self-merge should be rejected")
+	}
+	if err := s.UnmergeNetwork(a); err == nil {
+		t.Error("unmerging a network that is not merged should fail")
+	}
+}
+
+func TestLabelIsUnique(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	a := "192.0.2.1|255.255.255.0|02:00:00:00:00:01"
+	b := "198.51.100.1|255.255.255.0|02:00:00:00:00:02"
+	if err := s.SetLabel(a, "Same"); err != nil {
+		t.Fatal(err)
+	}
+	// Two fingerprints with one name would make a merge by name ambiguous.
+	if err := s.SetLabel(b, "Same"); err == nil {
+		t.Error("duplicate label should be rejected")
+	}
+}
+
+// Merging into a network that is itself merged must move the whole chain, or
+// Canonical would need to follow links.
+func TestMergeRepointsChain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	a := "192.0.2.1|255.255.255.0|02:00:00:00:00:01"
+	b := "192.0.2.1|255.255.255.0|02:00:00:00:00:02"
+	c := "192.0.2.1|255.255.255.0|02:00:00:00:00:03"
+
+	if err := s.MergeNetworks(a, b); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MergeNetworks(b, c); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Canonical(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a followed b to c, so one query still resolves it.
+	if got != c {
+		t.Errorf("canonical(%s) = %s, want %s", a, got, c)
+	}
+}
