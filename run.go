@@ -18,12 +18,17 @@ func runDaemon(store *Store, interval time.Duration, iface string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The agent restarts often under KeepAlive, and each start is a cheap
+	// chance to fold the WAL back in before it grows to hundreds of megabytes.
+	if err := store.Checkpoint(); err != nil {
+		log.Printf("checkpoint: %v", err)
+	}
+
 	var baseline Baseline
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	log.Printf("sampling %s every %s", iface, interval)
-
 	for {
 		if err := sampleOnce(ctx, store, &baseline, iface); err != nil && ctx.Err() == nil {
 			log.Printf("sample: %v", err)

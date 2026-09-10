@@ -20,7 +20,8 @@ type DBStats struct {
 	Oldest    time.Time
 	Newest    time.Time
 	SizeBytes int64
-	AgentPID  int // 0 when the agent is not loaded
+	WalBytes  int64 // sidecar size; 0 when fully checkpointed
+	AgentPID  int   // 0 when the agent is not loaded
 }
 
 // DiscardRate is the percentage of samples discarded.
@@ -62,6 +63,11 @@ func collectDBStats(dbPath, label string) (DBStats, error) {
 
 	if info, err := os.Stat(dbPath); err == nil {
 		s.SizeBytes = info.Size()
+	}
+	// The WAL is where most of the on-disk size sits until something
+	// checkpoints it, so report it rather than letting size look healthy.
+	if info, err := os.Stat(dbPath + "-wal"); err == nil {
+		s.WalBytes = info.Size()
 	}
 	s.AgentPID = agentPID(label)
 
@@ -106,6 +112,7 @@ func writeDBStats(w io.Writer, s DBStats) error {
 	}
 
 	fmt.Fprintf(w, "  %-14s %s\n", "size", humanBytes(uint64(s.SizeBytes)))
+	fmt.Fprintf(w, "  %-14s %s\n", "wal", humanBytes(uint64(s.WalBytes)))
 
 	switch {
 	case s.AgentPID == 0:

@@ -102,9 +102,19 @@ CREATE INDEX IF NOT EXISTS idx_samples_fp_ts ON samples(fp, ts);
 	return s.migrate()
 }
 
-// migrate adds columns to databases created by an earlier version. The schema
-// above uses CREATE TABLE IF NOT EXISTS, which silently skips a table that
-// already exists and so can never add a column to it.
+// schemaVersion tracks which migrations have run. An older binary ignores it
+// and applies whatever it knows, which is safe because every change so far is
+// additive: old code reads the columns it expects and never touches the rest.
+const schemaVersion = 1
+
+// migrate runs schema changes an earlier version did not have. Progressive and
+// additive only: nothing here may drop or rewrite the samples table, because a
+// downgraded binary would then CREATE TABLE IF NOT EXISTS an empty one and
+// report nothing rather than failing visibly.
+//
+// The reason check reads table_info rather than user_version because databases
+// created before this mechanism existed sit at user_version 0 with the column
+// already present, and must not be altered twice.
 func (s *Store) migrate() error {
 	rows, err := s.db.Query(`PRAGMA table_info(samples)`)
 	if err != nil {
@@ -137,6 +147,27 @@ func (s *Store) migrate() error {
 		if _, err := s.db.Exec(`ALTER TABLE samples ADD COLUMN reason TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("adding reason column: %w", err)
 		}
+	}
+
+	var version int
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("reading user_version: %w", err)
+	}
+	if version < schemaVersion {
+		// Not a parameter: PRAGMA user_version takes no bound values.
+		if _, err := s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
+			return fmt.Errorf("setting user_version: %w", err)
+		}
+	}
+	return nil
+}
+
+// Checkpoint folds the WAL into the database file and truncates it. Without
+// this the sidecar grows unbounded: an uncheckpointed WAL held roughly half
+// the on-disk size of a year's samples.
+func (s *Store) Checkpoint() error {
+	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return fmt.Errorf("checkpointing wal: %w", err)
 	}
 	return nil
 }

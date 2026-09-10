@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -181,5 +182,69 @@ func TestMigrateAddsReason(t *testing.T) {
 	}
 	if got[1].Reason != ReasonLinkDown {
 		t.Errorf("post-migration reason = %q, want %q", got[1].Reason, ReasonLinkDown)
+	}
+}
+
+func TestCheckpointTruncatesWal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	walPath := path + "-wal"
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	for i := range 500 {
+		sm := Sample{At: now.Add(time.Duration(i) * 10 * time.Second), FPKey: "k", RX: 100, TX: 10, Valid: true}
+		if err := s.InsertSample(sm); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	before, err := os.Stat(walPath)
+	if err != nil {
+		t.Fatalf("no wal after inserts: %v", err)
+	}
+	if before.Size() == 0 {
+		t.Fatal("wal empty after inserts; nothing to checkpoint")
+	}
+
+	if err := s.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.Stat(walPath)
+	if err != nil {
+		t.Fatalf("wal missing after checkpoint: %v", err)
+	}
+	if after.Size() >= before.Size() {
+		t.Errorf("wal %d -> %d, want it to shrink", before.Size(), after.Size())
+	}
+
+	got, err := s.SamplesSince(time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 500 {
+		t.Errorf("got %d samples after checkpoint, want 500", len(got))
+	}
+}
+
+func TestUserVersionSet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	var version int
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion {
+		t.Errorf("user_version = %d, want %d", version, schemaVersion)
 	}
 }
