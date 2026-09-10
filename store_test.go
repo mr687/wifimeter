@@ -36,6 +36,7 @@ func TestStoreRoundTrip(t *testing.T) {
 		{At: now.Add(10 * time.Second), FPKey: hot.Key(), RX: 200, TX: 20, Valid: true},
 		{At: now.Add(20 * time.Second), FPKey: home.Key(), RX: 50, TX: 5, Valid: true},
 		{At: now.Add(30 * time.Second), FPKey: hot.Key(), Valid: false, Reason: ReasonSleep},
+		{At: now.Add(40 * time.Second), FPKey: home.Key(), Valid: false, Reason: ReasonSwitch},
 	}
 	for _, samp := range samples {
 		if err := s.InsertSample(samp); err != nil {
@@ -68,13 +69,21 @@ func TestStoreRoundTrip(t *testing.T) {
 	if got[3].Valid {
 		t.Error("discarded sample round-tripped as valid")
 	}
+	// The reason is what doctor splits discard rates by, so it has to survive
+	// the trip rather than coming back empty.
+	if got[3].Reason != ReasonSleep {
+		t.Errorf("sample 3 reason = %q, want %q", got[3].Reason, ReasonSleep)
+	}
+	if got[4].Reason != ReasonSwitch {
+		t.Errorf("sample 4 reason = %q, want %q", got[4].Reason, ReasonSwitch)
+	}
 
 	total, discarded, err := s.DiscardStats()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != 4 || discarded != 1 {
-		t.Errorf("stats = total %d discarded %d, want 4/1", total, discarded)
+	if total != 5 || discarded != 2 {
+		t.Errorf("stats = total %d discarded %d, want 5/2", total, discarded)
 	}
 }
 
@@ -106,5 +115,71 @@ func TestStoreReopen(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].RX != 7 {
 		t.Fatalf("reopen lost data: %+v", got)
+	}
+}
+
+// A database written before the reason column existed must gain it on open.
+// CREATE TABLE IF NOT EXISTS cannot do this, so migrate has to.
+func TestMigrateAddsReason(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+
+	old, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recreate the pre-column schema by hand.
+	if _, err := old.db.Exec(`DROP TABLE samples`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.db.Exec(`CREATE TABLE samples (
+  id     INTEGER PRIMARY KEY,
+  ts     INTEGER NOT NULL,
+  fp     TEXT    NOT NULL,
+  rx     INTEGER NOT NULL,
+  tx     INTEGER NOT NULL,
+  valid  INTEGER NOT NULL
+)`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	if _, err := old.db.Exec(
+		`INSERT INTO samples (ts, fp, rx, tx, valid) VALUES (?, ?, ?, ?, ?)`,
+		now.Unix(), "k", 5, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopening runs migrate against the old table.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	got, err := s.SamplesSince(time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d samples, want 1", len(got))
+	}
+	// The pre-existing row has no reason recorded; it must read as none rather
+	// than failing the scan.
+	if got[0].Reason != ReasonNone {
+		t.Errorf("migrated row reason = %q, want %q", got[0].Reason, ReasonNone)
+	}
+
+	// And new writes through the migrated table must keep their reason.
+	if err := s.InsertSample(Sample{At: now.Add(10 * time.Second), FPKey: "k", Valid: false, Reason: ReasonLinkDown}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.SamplesSince(time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[1].Reason != ReasonLinkDown {
+		t.Errorf("post-migration reason = %q, want %q", got[1].Reason, ReasonLinkDown)
 	}
 }
