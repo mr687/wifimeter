@@ -468,37 +468,20 @@ func (s *Store) SamplesForReport() ([]Sample, error) {
 	return out, nil
 }
 
-// DiscardStats counts samples and discards for the report footer. Rolled days
-// contribute their stored counts rather than their collapsed rows: the report
-// renders each rolled day as one sample, so counting rows here would report a
-// discard rate that climbs toward 100% as history is rolled up.
+// DiscardStats counts samples and discards for the report footer, in SQL.
+// Rolled days contribute their stored counts rather than their collapsed rows,
+// so the rate stays true as history ages: counting rows would climb toward
+// 100% because a rolled day renders as one sample however many produced it.
 func (s *Store) DiscardStats() (total, discarded int, err error) {
-	rolled, err := s.DailyUsage()
-	if err != nil {
-		return 0, 0, err
-	}
-	raw, err := s.uncoveredRaw(rolled)
-	if err != nil {
-		return 0, 0, err
-	}
-	for _, sm := range raw {
-		total++
-		if !sm.Valid {
-			discarded++
-		}
-	}
-	for _, d := range rolled {
-		total += d.Samples
-	}
-	disc, err := s.DailyDiscardsByDay()
-	if err != nil {
-		return 0, 0, err
-	}
-	for _, d := range disc {
-		total += d.Count
-		discarded += d.Count
-	}
-	return total, discarded, nil
+	row := s.db.QueryRow(`
+SELECT
+  (SELECT COUNT(*) FROM samples)
+  + (SELECT COALESCE(SUM(samples), 0) FROM daily_usage)
+  + (SELECT COALESCE(SUM(count), 0) FROM daily_discards),
+  (SELECT COUNT(*) FROM samples WHERE valid = 0)
+  + (SELECT COALESCE(SUM(count), 0) FROM daily_discards)`)
+	err = row.Scan(&total, &discarded)
+	return total, discarded, err
 }
 
 // RolledDay is one network's usage for one local day, as stored in
