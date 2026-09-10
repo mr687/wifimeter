@@ -114,3 +114,30 @@ Release by pushing a tag:
 
 git tag -a vX.Y.Z -m "wifimeter vX.Y.Z" <sha>
 git push origin vX.Y.Z
+
+Release tags follow semver. Never pin a current version in docs or code: any
+file naming one goes stale the moment the next tag is pushed. `README.md` shows
+the `version` command's output, so it uses a placeholder rather than a number
+that has to be chased on every release.
+
+## Storage and retention
+
+Raw samples are kept for `RawRetentionDays` (7). The daemon folds each complete
+day into `daily_usage` and `daily_discards`, then drops that day's raw rows —
+rollup and delete in one transaction, so a crash cannot lose a day that was
+dropped but never recorded.
+
+History therefore keeps daily totals forever and loses sub-10s detail after a
+week. Nothing displays that detail for older days, which is why dropping it is
+safe.
+
+Deleting rows does not shrink the file; SQLite reuses the pages. `wifimeter
+compact` runs `VACUUM` to give them back. That takes an exclusive lock and
+rewrites everything, so it is a command rather than something the daemon does
+on a schedule.
+
+Schema changes go through `migrate()` and must stay additive. Never drop or
+rewrite `samples`: a downgraded binary would recreate it empty and report
+nothing instead of failing visibly. Day bucketing happens in Go via
+`time.Date`, never SQLite's `date()`, because `localtime` inside the database
+depends on the TZ of whoever opened it.
