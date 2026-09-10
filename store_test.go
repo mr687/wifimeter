@@ -619,3 +619,60 @@ func TestRetainIsIdempotent(t *testing.T) {
 		t.Errorf("rx = %d after three retains, want 10000", rolled[0].RX)
 	}
 }
+
+// compact rewrites the whole database, so it needs a test even though it is a
+// thin wrapper: nothing else would catch it silently corrupting or emptying
+// the file.
+func TestCompactShrinksAndKeepsData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	day := time.Now().AddDate(0, 0, -5).Truncate(24 * time.Hour)
+	fp := "192.0.2.1|255.255.255.0|00:00:5e:00:53:01"
+	for j := range 3000 {
+		sm := Sample{At: day.Add(time.Duration(j) * 10 * time.Second), FPKey: fp, RX: 1000, TX: 100, Valid: true}
+		if err := s.InsertSample(sm); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := rollupClosedDays(s, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := info.Size()
+
+	if err := s.Compact(); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() >= before {
+		t.Errorf("size %d -> %d, want it to shrink", before, after.Size())
+	}
+
+	// VACUUM rewrites the file, so prove the data survived it.
+	rolled, err := s.DailyUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rolled) != 1 {
+		t.Fatalf("got %d rolled days after compact, want 1", len(rolled))
+	}
+	if rolled[0].RX != 3000*1000 {
+		t.Errorf("rx = %d after compact, want %d", rolled[0].RX, 3000*1000)
+	}
+}
