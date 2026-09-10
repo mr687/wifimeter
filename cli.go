@@ -113,7 +113,7 @@ func windowsFor(now time.Time, days int) []Window {
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	return []Window{
 		{Name: "Today", From: midnight},
-		{Name: fmt.Sprintf("%d days", days), From: midnight.AddDate(0, 0, -(days - 1))},
+		{Name: pluralDays(days), From: midnight.AddDate(0, 0, -(days - 1))},
 		{Name: "All time"},
 	}
 }
@@ -245,4 +245,11 @@ func compactCmd() error {
 			humanBytes(uint64(before.Size())), humanBytes(uint64(after.Size())))
 	}
 	return nil
+}
+
+func pluralDays(n int) string {
+	if n == 1 {
+		return "1 day"
+	}
+	return fmt.Sprintf("%d days", n)
 }
