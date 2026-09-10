@@ -95,6 +95,23 @@ CREATE TABLE IF NOT EXISTS networks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_samples_fp_ts ON samples(fp, ts);
+
+CREATE TABLE IF NOT EXISTS daily_usage (
+  fp      TEXT    NOT NULL,
+  day     TEXT    NOT NULL,
+  rx      INTEGER NOT NULL,
+  tx      INTEGER NOT NULL,
+  samples INTEGER NOT NULL,
+  PRIMARY KEY (fp, day)
+);
+
+CREATE TABLE IF NOT EXISTS daily_discards (
+  day    TEXT    NOT NULL,
+  fp     TEXT    NOT NULL,
+  reason TEXT    NOT NULL,
+  count  INTEGER NOT NULL,
+  PRIMARY KEY (day, fp, reason)
+);
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("creating schema: %w", err)
@@ -160,6 +177,65 @@ func (s *Store) migrate() error {
 		}
 	}
 	return nil
+}
+
+// dayKeyOf buckets a timestamp the same way Daily does, so a rolled-up day and
+// a freshly sampled one agree at DST boundaries and across machines. Doing this
+// in Go rather than with SQLite's date() matters: localtime in the database
+// depends on the TZ of whoever opened it, which is not stable across runs.
+func dayKeyOf(t time.Time) string {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).Format("2006-01-02")
+}
+
+// Rollup recomputes one day from the raw samples and writes the result.
+// Replacing rather than adding on conflict is what makes it safe to run again:
+// the source rows are still there until retention deletes them, so an additive
+// upsert would count them once per pass.
+//
+// It deletes nothing. That belongs to retention, once the read path trusts
+// these tables.
+func (s *Store) RollupDay(day time.Time) error {
+	key := dayKeyOf(day)
+	from := startOfDay(day).Unix()
+	to := startOfDay(day).AddDate(0, 0, 1).Unix()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning rollup: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+INSERT INTO daily_usage (fp, day, rx, tx, samples)
+SELECT fp, ?1, SUM(rx), SUM(tx), COUNT(*)
+FROM samples
+WHERE ts >= ?2 AND ts < ?3 AND valid = 1
+GROUP BY fp
+ON CONFLICT(fp, day) DO UPDATE SET
+  rx      = excluded.rx,
+  tx      = excluded.tx,
+  samples = excluded.samples`,
+		key, from, to); err != nil {
+		return fmt.Errorf("rolling up usage for %s: %w", key, err)
+	}
+
+	if _, err := tx.Exec(`
+INSERT INTO daily_discards (day, fp, reason, count)
+SELECT ?1, fp, reason, COUNT(*)
+FROM samples
+WHERE ts >= ?2 AND ts < ?3 AND valid = 0
+GROUP BY fp, reason
+ON CONFLICT(day, fp, reason) DO UPDATE SET
+  count = excluded.count`,
+		key, from, to); err != nil {
+		return fmt.Errorf("rolling up discards for %s: %w", key, err)
+	}
+
+	return tx.Commit()
+}
+
+func startOfDay(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
 // Checkpoint folds the WAL into the database file and truncates it. Without
@@ -277,4 +353,56 @@ func (s *Store) DiscardStats() (total, discarded int, err error) {
 	row := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(valid = 0), 0) FROM samples`)
 	err = row.Scan(&total, &discarded)
 	return total, discarded, err
+}
+
+// RolledDay is one network's usage for one local day, as stored in
+// daily_usage.
+type RolledDay struct {
+	FPKey   string
+	Day     string
+	RX      uint64
+	TX      uint64
+	Samples int
+}
+
+// DailyUsage returns every rolled-up day. Populated from Phase 2 onward and
+// empty until a rollup runs; nothing reads it yet.
+func (s *Store) DailyUsage() ([]RolledDay, error) {
+	rows, err := s.db.Query(`SELECT fp, day, rx, tx, samples FROM daily_usage ORDER BY day, fp`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []RolledDay
+	for rows.Next() {
+		var d RolledDay
+		if err := rows.Scan(&d.FPKey, &d.Day, &d.RX, &d.TX, &d.Samples); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// DailyDiscards returns rolled-up discard counts keyed by reason.
+func (s *Store) DailyDiscards() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT reason, SUM(count) FROM daily_discards GROUP BY reason`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]int)
+	for rows.Next() {
+		var (
+			reason string
+			count  int
+		)
+		if err := rows.Scan(&reason, &count); err != nil {
+			return nil, err
+		}
+		out[reason] = count
+	}
+	return out, rows.Err()
 }

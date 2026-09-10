@@ -248,3 +248,165 @@ func TestUserVersionSet(t *testing.T) {
 		t.Errorf("user_version = %d, want %d", version, schemaVersion)
 	}
 }
+
+// A rolled-up day must carry exactly what the raw samples for that day held.
+// This is the invariant the read path will depend on once it starts reading
+// daily_usage instead of samples, so it is asserted before anything does.
+func TestRollupMatchesRaw(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	day := time.Date(2026, 9, 9, 0, 0, 0, 0, time.Local)
+	hot := "192.0.2.1|255.255.255.0|00:00:5e:00:53:01"
+	quiet := "198.51.100.1|255.255.255.0|00:00:5e:00:53:02"
+
+	// Four valid samples and three discards, spread across two networks, all
+	// inside the target day.
+	inserts := []Sample{
+		{At: day.Add(3 * time.Hour), FPKey: hot, RX: 700, TX: 70, Valid: true},
+		{At: day.Add(9 * time.Hour), FPKey: hot, RX: 300, TX: 30, Valid: true},
+		{At: day.Add(15 * time.Hour), FPKey: quiet, RX: 50, TX: 5, Valid: true},
+		{At: day.Add(23 * time.Hour), FPKey: hot, RX: 100, TX: 10, Valid: true},
+		{At: day.Add(4 * time.Hour), FPKey: hot, Valid: false, Reason: ReasonSleep},
+		{At: day.Add(5 * time.Hour), FPKey: hot, Valid: false, Reason: ReasonSleep},
+		{At: day.Add(6 * time.Hour), FPKey: quiet, Valid: false, Reason: ReasonSwitch},
+	}
+	for _, sm := range inserts {
+		if err := s.InsertSample(sm); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.RollupDay(day); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.DailyUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d daily rows, want 2", len(got))
+	}
+
+	want := map[string]DayTotal{
+		hot:   {RX: 1100, TX: 110},
+		quiet: {RX: 50, TX: 5},
+	}
+	for _, d := range got {
+		w, ok := want[d.FPKey]
+		if !ok {
+			t.Errorf("unexpected fp %q in daily_usage", d.FPKey)
+			continue
+		}
+		if d.RX != w.RX || d.TX != w.TX {
+			t.Errorf("%s = rx %d tx %d, want rx %d tx %d", d.FPKey, d.RX, d.TX, w.RX, w.TX)
+		}
+		if d.Samples != 3 && d.FPKey == hot {
+			t.Errorf("hot samples counted = %d, want 3", d.Samples)
+		}
+	}
+
+	disc, err := s.DailyDiscards()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disc["sleep/wake"] != 2 {
+		t.Errorf("sleep/wake discards = %d, want 2", disc["sleep/wake"])
+	}
+	if disc["network-switch"] != 1 {
+		t.Errorf("network-switch discards = %d, want 1", disc["network-switch"])
+	}
+
+	// Raw rows survive: this phase populates, it does not retain.
+	raw, err := s.SamplesSince(time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != len(inserts) {
+		t.Errorf("got %d raw samples, want %d; rollup must not delete", len(raw), len(inserts))
+	}
+}
+
+// Running a rollup twice must not double count, or every agent restart would
+// inflate the totals it is meant to be summarising.
+func TestRollupIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	day := time.Date(2026, 9, 9, 0, 0, 0, 0, time.Local)
+	if err := s.InsertSample(Sample{At: day.Add(3 * time.Hour), FPKey: "k", RX: 500, TX: 50, Valid: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 3 {
+		if err := s.RollupDay(day); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.DailyUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d rows, want 1", len(got))
+	}
+	if got[0].RX != 500 {
+		t.Errorf("rx = %d after three rollups, want 500", got[0].RX)
+	}
+	if got[0].Samples != 1 {
+		t.Errorf("samples = %d after three rollups, want 1", got[0].Samples)
+	}
+}
+
+// Samples just outside the target day must land in their own bucket or none at
+// all, never in the day being rolled up.
+func TestRollupRespectsDayBoundaries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	day := time.Date(2026, 9, 9, 0, 0, 0, 0, time.Local)
+	before := day.Add(-time.Second)
+	after := day.AddDate(0, 0, 1)
+
+	if err := s.InsertSample(Sample{At: before, FPKey: "k", RX: 111, TX: 11, Valid: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertSample(Sample{At: day.Add(time.Hour), FPKey: "k", RX: 222, TX: 22, Valid: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertSample(Sample{At: after, FPKey: "k", RX: 333, TX: 33, Valid: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RollupDay(day); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.DailyUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d rows, want 1", len(got))
+	}
+	if got[0].Day != "2026-09-09" {
+		t.Errorf("day = %q, want 2026-09-09", got[0].Day)
+	}
+	if got[0].RX != 222 {
+		t.Errorf("rx = %d, want 222 (the neighbouring days must stay out)", got[0].RX)
+	}
+}

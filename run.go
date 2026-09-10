@@ -27,6 +27,8 @@ func runDaemon(store *Store, interval time.Duration, iface string) error {
 	var baseline Baseline
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	rollup := time.NewTicker(RollupInterval)
+	defer rollup.Stop()
 
 	log.Printf("sampling %s every %s", iface, interval)
 	for {
@@ -38,7 +40,26 @@ func runDaemon(store *Store, interval time.Duration, iface string) error {
 		case <-ctx.Done():
 			log.Print("shutting down")
 			return nil
+		case <-rollup.C:
+			if err := rollupClosedDays(store, time.Now()); err != nil && ctx.Err() == nil {
+				log.Printf("rollup: %v", err)
+			}
 		case <-ticker.C:
+		}
+	}
+}
+
+// rollupClosedDays folds every complete past day into the daily tables. Only
+// days entirely behind the retention window are eligible: today is still
+// accumulating, and raw rows newer than that are what the report reads.
+func rollupClosedDays(store *Store, now time.Time) error {
+	today := startOfDay(now)
+	for d := today.AddDate(0, 0, -1); ; d = d.AddDate(0, 0, -1) {
+		if today.Sub(d) > MaxRollupLookback {
+			return nil
+		}
+		if err := store.RollupDay(d); err != nil {
+			return err
 		}
 	}
 }
