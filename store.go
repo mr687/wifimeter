@@ -189,21 +189,53 @@ func dayKeyOf(t time.Time) string {
 
 // Rollup recomputes one day from the raw samples and writes the result.
 // Replacing rather than adding on conflict is what makes it safe to run again:
-// the source rows are still there until retention deletes them, so an additive
-// upsert would count them once per pass.
+// an additive upsert counts the same samples once per pass.
 //
-// It deletes nothing. That belongs to retention, once the read path trusts
-// these tables.
+// It deletes nothing; RetainDay does that, in the same transaction as the
+// rollup so a crash cannot lose a day that was dropped but never folded in.
 func (s *Store) RollupDay(day time.Time) error {
-	key := dayKeyOf(day)
-	from := startOfDay(day).Unix()
-	to := startOfDay(day).AddDate(0, 0, 1).Unix()
-
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("beginning rollup: %w", err)
 	}
 	defer tx.Rollback()
+
+	if err := s.rollupTx(tx, day); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RetainDay rolls a day up and then drops its raw rows. The two share one
+// transaction: committed together, the daily tables are the only copy of that
+// day, and rolled back together, nothing is lost.
+//
+// Only call this for days already past the retention window. Deleting a day
+// that is still accumulating would leave a partial total behind.
+func (s *Store) RetainDay(day time.Time) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning retention: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := s.rollupTx(tx, day); err != nil {
+		return err
+	}
+
+	from := startOfDay(day).Unix()
+	to := startOfDay(day).AddDate(0, 0, 1).Unix()
+	if _, err := tx.Exec(`DELETE FROM samples WHERE ts >= ? AND ts < ?`, from, to); err != nil {
+		return fmt.Errorf("dropping raw rows for %s: %w", dayKeyOf(day), err)
+	}
+
+	return tx.Commit()
+}
+
+func (s *Store) rollupTx(tx *sql.Tx, day time.Time) error {
+	key := dayKeyOf(day)
+	from := startOfDay(day).Unix()
+	to := startOfDay(day).AddDate(0, 0, 1).Unix()
 
 	if _, err := tx.Exec(`
 INSERT INTO daily_usage (fp, day, rx, tx, samples)
@@ -230,8 +262,7 @@ ON CONFLICT(day, fp, reason) DO UPDATE SET
 		key, from, to); err != nil {
 		return fmt.Errorf("rolling up discards for %s: %w", key, err)
 	}
-
-	return tx.Commit()
+	return nil
 }
 
 func startOfDay(t time.Time) time.Time {
@@ -548,4 +579,18 @@ func (s *Store) DailyDiscards() (map[string]int, error) {
 		out[reason] = count
 	}
 	return out, rows.Err()
+}
+
+// OldestSampleDay returns the day of the earliest raw sample, or the zero time
+// when there are none. Retention walks forward from here so each pass makes
+// progress on the backlog instead of re-covering the same recent days.
+func (s *Store) OldestSampleDay() (time.Time, error) {
+	var ts sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MIN(ts) FROM samples`).Scan(&ts); err != nil {
+		return time.Time{}, err
+	}
+	if !ts.Valid {
+		return time.Time{}, nil
+	}
+	return time.Unix(ts.Int64, 0), nil
 }

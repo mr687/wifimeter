@@ -477,3 +477,145 @@ func TestReportIdenticalAfterRollup(t *testing.T) {
 		t.Errorf("report changed after rollup:\n--- raw ---\n%s\n--- rolled ---\n%s", sbBefore.String(), sbAfter.String())
 	}
 }
+
+// Retention drops the raw rows, so this is the point where a day exists only in
+// the rollup. The report must render exactly as it did with raw rows present.
+func TestRetainKeepsReportIdentical(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	loc := time.Local
+	base := time.Now().AddDate(0, 0, -5).Truncate(24 * time.Hour)
+	fp := "192.0.2.1|255.255.255.0|00:00:5e:00:53:01"
+	labels := map[string]string{fp: "Home"}
+
+	for i := range 2 {
+		day := base.AddDate(0, 0, i)
+		for j := range 500 {
+			at := day.Add(time.Duration(j) * 10 * time.Second)
+			sm := Sample{At: at, FPKey: fp, RX: 1000, TX: 100, Valid: true}
+			if j%10 == 0 {
+				sm = Sample{At: at, FPKey: fp, Valid: false, Reason: ReasonSleep}
+			}
+			if err := s.InsertSample(sm); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	render := func() string {
+		samples, err := s.SamplesForReport()
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep := Aggregate(samples, windowsFor(time.Now(), 7), labels)
+		tot, disc, _ := s.DiscardStats()
+		rep.Total, rep.Discarded = tot, disc
+		var sb strings.Builder
+		_ = rep.Write(&sb)
+		return sb.String()
+	}
+
+	before := render()
+
+	for i := range 2 {
+		if err := s.RetainDay(base.AddDate(0, 0, i).In(loc)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	raw, err := s.SamplesSince(time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 0 {
+		t.Errorf("raw rows remain after retention: %d", len(raw))
+	}
+
+	after := render()
+	if before != after {
+		t.Errorf("report changed after retention:\n--- before ---\n%s\n--- after ---\n%s", before, after)
+	}
+}
+
+// A failed retention must not leave a day dropped but unrecorded. The delete is
+// in the same transaction as the rollup, so both commit or neither does.
+func TestRetainIsAtomic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	day := time.Now().AddDate(0, 0, -5).Truncate(24 * time.Hour)
+	fp := "192.0.2.1|255.255.255.0|00:00:5e:00:53:01"
+	for j := range 100 {
+		if err := s.InsertSample(Sample{At: day.Add(time.Duration(j) * 10 * time.Second), FPKey: fp, RX: 100, TX: 10, Valid: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.RetainDay(day.In(time.Local)); err != nil {
+		t.Fatal(err)
+	}
+
+	rolled, err := s.DailyUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rolled) != 1 {
+		t.Fatalf("got %d rolled rows, want 1", len(rolled))
+	}
+	// Every sample survived into the rollup; none were dropped uncounted.
+	if rolled[0].Samples != 100 {
+		t.Errorf("samples recorded = %d, want 100", rolled[0].Samples)
+	}
+	if rolled[0].RX != 10000 {
+		t.Errorf("rx = %d, want 10000", rolled[0].RX)
+	}
+}
+
+// Retaining a day twice must be a no-op, not a second deletion of rows already
+// gone or a wipe of the stored totals.
+func TestRetainIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	day := time.Now().AddDate(0, 0, -5).Truncate(24 * time.Hour)
+	fp := "192.0.2.1|255.255.255.0|00:00:5e:00:53:01"
+	for j := range 100 {
+		if err := s.InsertSample(Sample{At: day.Add(time.Duration(j) * 10 * time.Second), FPKey: fp, RX: 100, TX: 10, Valid: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for range 3 {
+		if err := s.RetainDay(day.In(time.Local)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rolled, err := s.DailyUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rolled) != 1 {
+		t.Fatalf("got %d rolled rows, want 1", len(rolled))
+	}
+	// Re-running after the source rows are gone must not zero the totals.
+	if rolled[0].Samples != 100 {
+		t.Errorf("samples = %d after three retains, want 100", rolled[0].Samples)
+	}
+	if rolled[0].RX != 10000 {
+		t.Errorf("rx = %d after three retains, want 10000", rolled[0].RX)
+	}
+}
