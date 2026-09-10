@@ -215,3 +215,34 @@ func doctorCmd(args []string) error {
 	}
 	return writeDBStats(w, stats)
 }
+
+// compactCmd rewrites the database so pages freed by retention go back to the
+// filesystem. Deleting rows does not shrink the file on its own.
+func compactCmd() error {
+	path, err := DefaultDBPath()
+	if err != nil {
+		return err
+	}
+
+	before, _ := os.Stat(path)
+
+	store, err := Open(path)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	if err := store.Compact(); err != nil {
+		return err
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if before != nil {
+		fmt.Printf("compacted %s: %s -> %s\n", path,
+			humanBytes(uint64(before.Size())), humanBytes(uint64(after.Size())))
+	}
+	return nil
+}

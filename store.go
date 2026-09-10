@@ -279,6 +279,21 @@ func (s *Store) Checkpoint() error {
 	return nil
 }
 
+// Compact rewrites the database so freed pages go back to the filesystem.
+// Retention deletes rows but SQLite keeps their pages for reuse, so the file
+// stays at its high-water mark: reclaiming 48000 of 60000 rows left the size
+// unchanged. Growth stops either way; this is what shrinks an already large
+// file.
+//
+// It takes an exclusive lock and rewrites everything, so it belongs in an
+// explicit command, not the sampling loop.
+func (s *Store) Compact() error {
+	if _, err := s.db.Exec(`VACUUM`); err != nil {
+		return fmt.Errorf("vacuuming: %w", err)
+	}
+	return s.Checkpoint()
+}
+
 func (s *Store) Close() error { return s.db.Close() }
 
 // InsertSample records one sample. Discarded samples are recorded too, with

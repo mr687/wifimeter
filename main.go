@@ -20,6 +20,7 @@ func usage() {
   doctor                   zero-permission self-check
   install                  write the launchd agent and load it
   version                  print the installed version
+  compact                  shrink the database after retention frees rows
   uninstall [--wipe]       unload and remove the agent and binary
 
   -iface applies to run, doctor, and label; it defaults to the detected
@@ -48,6 +49,8 @@ func main() {
 		err = installCmd()
 	case "uninstall":
 		err = uninstallCmd(os.Args[2:])
+	case "compact":
+		err = compactCmd()
 	case "version":
 		err = versionCmd()
 	default:
