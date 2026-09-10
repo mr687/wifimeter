@@ -676,3 +676,43 @@ func TestCompactShrinksAndKeepsData(t *testing.T) {
 		t.Errorf("rx = %d after compact, want %d", rolled[0].RX, 3000*1000)
 	}
 }
+
+// doctor reports the stored range from both raw rows and rollups. Reading only
+// samples would report the retention window however much is actually kept.
+func TestDoctorRangeSpansRollups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	old := time.Now().AddDate(0, 0, -40).Truncate(24 * time.Hour)
+	fp := "192.0.2.1|255.255.255.0|00:00:5e:00:53:01"
+	if err := s.InsertSample(Sample{At: old.Add(12 * time.Hour), FPKey: fp, RX: 100, TX: 10, Valid: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertSample(Sample{At: time.Now(), FPKey: fp, RX: 100, TX: 10, Valid: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Retention moves the old day into daily_usage and drops its raw rows.
+	if err := s.RetainDay(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := collectDBStats(path, "com.github.mr687.wifimeter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Oldest.IsZero() {
+		t.Fatal("oldest is zero")
+	}
+	// The rolled-up day is 40 days back, so a range still sourced only from
+	// samples would land within the last week instead.
+	if stats.Oldest.After(time.Now().AddDate(0, 0, -30)) {
+		t.Errorf("oldest = %v, want around %v (40 days back)", stats.Oldest, old)
+	}
+}
