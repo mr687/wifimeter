@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -78,7 +79,8 @@ CREATE TABLE IF NOT EXISTS samples (
   fp     TEXT    NOT NULL,
   rx     INTEGER NOT NULL,
   tx     INTEGER NOT NULL,
-  valid  INTEGER NOT NULL
+  valid  INTEGER NOT NULL,
+  reason TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS networks (
@@ -97,6 +99,45 @@ CREATE INDEX IF NOT EXISTS idx_samples_fp_ts ON samples(fp, ts);
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("creating schema: %w", err)
 	}
+	return s.migrate()
+}
+
+// migrate adds columns to databases created by an earlier version. The schema
+// above uses CREATE TABLE IF NOT EXISTS, which silently skips a table that
+// already exists and so can never add a column to it.
+func (s *Store) migrate() error {
+	rows, err := s.db.Query(`PRAGMA table_info(samples)`)
+	if err != nil {
+		return fmt.Errorf("reading samples schema: %w", err)
+	}
+	defer rows.Close()
+
+	var cols []string
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notNull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("reading samples column: %w", err)
+		}
+		cols = append(cols, name)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if !slices.Contains(cols, "reason") {
+		// Rows written before this column existed lose nothing: they had no
+		// reason recorded either way, and the empty string reads as ReasonNone.
+		if _, err := s.db.Exec(`ALTER TABLE samples ADD COLUMN reason TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("adding reason column: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -111,8 +152,8 @@ func (s *Store) InsertSample(samp Sample) error {
 		valid = 1
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO samples (ts, fp, rx, tx, valid) VALUES (?, ?, ?, ?, ?)`,
-		samp.At.Unix(), samp.FPKey, samp.RX, samp.TX, valid,
+		`INSERT INTO samples (ts, fp, rx, tx, valid, reason) VALUES (?, ?, ?, ?, ?, ?)`,
+		samp.At.Unix(), samp.FPKey, samp.RX, samp.TX, valid, string(samp.Reason),
 	)
 	return err
 }
@@ -174,7 +215,7 @@ func (s *Store) Labels() (map[string]string, error) {
 // SamplesSince returns every sample at or after the given time, oldest first.
 func (s *Store) SamplesSince(from time.Time) ([]Sample, error) {
 	rows, err := s.db.Query(
-		`SELECT ts, fp, rx, tx, valid FROM samples WHERE ts >= ? ORDER BY ts`,
+		`SELECT ts, fp, rx, tx, valid, reason FROM samples WHERE ts >= ? ORDER BY ts`,
 		from.Unix())
 	if err != nil {
 		return nil, err
@@ -184,15 +225,17 @@ func (s *Store) SamplesSince(from time.Time) ([]Sample, error) {
 	var out []Sample
 	for rows.Next() {
 		var (
-			ts    int64
-			valid int
-			s     Sample
+			ts     int64
+			valid  int
+			reason string
+			s      Sample
 		)
-		if err := rows.Scan(&ts, &s.FPKey, &s.RX, &s.TX, &valid); err != nil {
+		if err := rows.Scan(&ts, &s.FPKey, &s.RX, &s.TX, &valid, &reason); err != nil {
 			return nil, err
 		}
 		s.At = time.Unix(ts, 0).UTC()
 		s.Valid = valid != 0
+		s.Reason = Reason(reason)
 		out = append(out, s)
 	}
 	return out, rows.Err()
