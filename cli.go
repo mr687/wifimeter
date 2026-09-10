@@ -4,10 +4,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -254,20 +256,56 @@ func pluralDays(n int) string {
 	return fmt.Sprintf("%d days", n)
 }
 
+// parseMergeArgs reads the two network names. Pure, so it can be tested
+// without a database.
+//
+// The flag package stops parsing at the first non-flag argument, so
+// "merge A --into B" would leave --into unread. The flag and its value are
+// lifted out before the positional name.
+func parseMergeArgs(args []string) (src, into string, err error) {
+	// A bare scan for non-flags cannot tell a flag's value from the name: in
+	// "--into Motoloro Motoloro2" it would take Motoloro as the source.
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--into" && i+1 < len(args) {
+			rest = append(rest, a, args[i+1])
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "--into=") {
+			rest = append(rest, a)
+			continue
+		}
+		if !strings.HasPrefix(a, "-") && src == "" {
+			src = a
+			continue
+		}
+		rest = append(rest, a)
+	}
+
+	fs := flag.NewFlagSet("merge", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	intoFlag := fs.String("into", "", "name of the network to merge into")
+	if err := fs.Parse(rest); err != nil {
+		return "", "", err
+	}
+
+	if src == "" || *intoFlag == "" {
+		return "", "", errors.New("usage: wifimeter merge NAME --into NAME")
+	}
+	if src == *intoFlag {
+		return "", "", fmt.Errorf("cannot merge %q into itself", src)
+	}
+	return src, *intoFlag, nil
+}
+
 // mergeCmd makes one network report as another, for a hotspot whose gateway
 // MAC rotates and so shows up as several fingerprints.
 func mergeCmd(args []string) error {
-	fs := flag.NewFlagSet("merge", flag.ExitOnError)
-	into := fs.String("into", "", "name of the network to merge into")
-	if err := fs.Parse(args); err != nil {
+	src, into, err := parseMergeArgs(args)
+	if err != nil {
 		return err
-	}
-	src := fs.Arg(0)
-	if src == "" || *into == "" {
-		return fmt.Errorf("usage: wifimeter merge NAME --into NAME")
-	}
-	if src == *into {
-		return fmt.Errorf("cannot merge %q into itself", src)
 	}
 
 	path, err := DefaultDBPath()
@@ -284,14 +322,14 @@ func mergeCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	dstFP, err := store.FPForLabel(*into)
+	dstFP, err := store.FPForLabel(into)
 	if err != nil {
 		return err
 	}
 	if err := store.MergeNetworks(srcFP, dstFP); err != nil {
 		return err
 	}
-	fmt.Printf("merged %q into %q\n", src, *into)
+	fmt.Printf("merged %q into %q\n", src, into)
 	return nil
 }
 
