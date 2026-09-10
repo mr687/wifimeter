@@ -18,6 +18,17 @@ make build          # -> ~/bin/wifimeter
 make install        # build, then write the launchd agent and load it
 ```
 
+Then, against an installed agent:
+
+```sh
+wifimeter report            # per-network totals, today / N days / all time
+wifimeter report --daily    # day-by-day, all networks or one via --label/--fp
+wifimeter label             # name a gateway fingerprint
+wifimeter doctor            # zero-permission self-check and database health
+wifimeter compact           # VACUUM, to give back pages retention freed
+wifimeter uninstall         # unload the agent and remove its plist
+```
+
 `make check` **rewrites files** (`fmt` is `gofmt -w .`). Run `gofmt -l .` first
 if you want to see whether anything is unformatted.
 

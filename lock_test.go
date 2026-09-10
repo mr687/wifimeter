@@ -26,7 +26,16 @@ func TestLockPathOutsideTemp(t *testing.T) {
 	}
 }
 
+// isolateLockDir points dataDir at a temp directory. The real lock lives
+// beside the live database, so acquiring it here would collide with an agent
+// already running on this machine and fail for a reason unrelated to the test.
+func isolateLockDir(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+}
+
 func TestAcquireDaemonLockIsExclusive(t *testing.T) {
+	isolateLockDir(t)
 	first, err := acquireDaemonLock()
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +54,7 @@ func TestAcquireDaemonLockIsExclusive(t *testing.T) {
 }
 
 func TestAcquireDaemonLockReleased(t *testing.T) {
+	isolateLockDir(t)
 	first, err := acquireDaemonLock()
 	if err != nil {
 		t.Fatal(err)
