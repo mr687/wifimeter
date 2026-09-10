@@ -96,6 +96,11 @@ CREATE TABLE IF NOT EXISTS networks (
 
 CREATE INDEX IF NOT EXISTS idx_samples_fp_ts ON samples(fp, ts);
 
+CREATE TABLE IF NOT EXISTS network_alias (
+  fp       TEXT PRIMARY KEY,
+  alias_of TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS daily_usage (
   fp      TEXT    NOT NULL,
   day     TEXT    NOT NULL,
@@ -176,6 +181,23 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("setting user_version: %w", err)
 		}
 	}
+	// Labels are unique so a merge can name a network instead of typing a long
+	// fingerprint. The index is skipped when rows already collide, because
+	// creating it would fail and take Open with it, stopping the agent.
+	// SetLabel enforces uniqueness on write either way.
+	var dupes int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM (
+		SELECT label FROM networks
+		WHERE label IS NOT NULL AND label != ''
+		GROUP BY label HAVING COUNT(*) > 1)`).Scan(&dupes); err != nil {
+		return fmt.Errorf("checking duplicate labels: %w", err)
+	}
+	if dupes == 0 {
+		if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_networks_label ON networks(label)`); err != nil {
+			return fmt.Errorf("adding label index: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -331,6 +353,19 @@ ON CONFLICT(fp) DO UPDATE SET
 // SetLabel names a fingerprint. The label is what report prints in place of
 // the raw key.
 func (s *Store) SetLabel(fpKey, label string) error {
+	// Labels have to be unique for a merge to be named rather than typed as a
+	// fingerprint. Enforced here as well as by the index, since the index is
+	// skipped on databases that already have duplicates.
+	var other string
+	err := s.db.QueryRow(
+		`SELECT fp FROM networks WHERE label = ? AND fp != ?`, label, fpKey).Scan(&other)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if other != "" {
+		return fmt.Errorf("label %q is already used by another network", label)
+	}
+
 	res, err := s.db.Exec(`
 INSERT INTO networks (fp, label, first_seen, last_seen)
 VALUES (?, ?, ?, ?)
@@ -346,9 +381,114 @@ ON CONFLICT(fp) DO UPDATE SET label = excluded.label`,
 	return nil
 }
 
+// RolledDay is one network's usage for one local day, as stored in
+// daily_usage.
+type RolledDay struct {
+	FPKey   string
+	Day     string
+	RX      uint64
+	TX      uint64
+	Samples int
+}
+
+// RolledDiscard is one day's discards for one network and reason.
+type RolledDiscard struct {
+	Day    string
+	FPKey  string
+	Reason string
+	Count  int
+}
+
+// Canonical resolves a fingerprint to the identity it stands for. A hotspot
+// that rotates its gateway MAC is one network but several fingerprints, so
+// reading resolves each to the one it was merged into.
+//
+// Not recursive: an alias always points straight at the identity, never at
+// another alias, so one query settles it.
+func (s *Store) Canonical(key string) (string, error) {
+	var alias string
+	err := s.db.QueryRow(`SELECT alias_of FROM network_alias WHERE fp = ?`, key).Scan(&alias)
+	if errors.Is(err, sql.ErrNoRows) {
+		return key, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return alias, nil
+}
+
+// FPForLabel resolves a label to its fingerprint, so commands can take a name
+// instead of a key. Reports an error when nothing carries that label, rather
+// than creating an entry for a typo.
+func (s *Store) FPForLabel(label string) (string, error) {
+	var fp string
+	err := s.db.QueryRow(
+		`SELECT fp FROM networks WHERE label = ? AND label IS NOT NULL AND label != ''`, label).Scan(&fp)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("no network labeled %q", label)
+	}
+	if err != nil {
+		return "", err
+	}
+	return fp, nil
+}
+
+// MergeNetworks makes src report as dst. Historical rows keep their original
+// fingerprint, so removing the alias later restores the split for free.
+//
+// The source label is dropped: two names for one network would be confusing,
+// and the canonical one is the one the user kept.
+func (s *Store) MergeNetworks(src, dst string) error {
+	if src == dst {
+		return errors.New("cannot merge a network into itself")
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Point at the identity, never at another alias, so Canonical stays one
+	// query. Anything already merged into src follows it to dst.
+	if _, err := tx.Exec(`
+INSERT INTO network_alias (fp, alias_of) VALUES (?, ?)
+ON CONFLICT(fp) DO UPDATE SET alias_of = excluded.alias_of`, src, dst); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE network_alias SET alias_of = ? WHERE alias_of = ? AND fp != ?`, dst, src, src); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE networks SET label = NULL WHERE fp = ?`, src); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UnmergeNetwork restores a fingerprint as its own network. The old label is
+// not restored, so it reports as a raw fingerprint until named again.
+func (s *Store) UnmergeNetwork(fp string) error {
+	res, err := s.db.Exec(`DELETE FROM network_alias WHERE fp = ?`, fp)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err == nil && n == 0 {
+		return fmt.Errorf("%s is not merged", fp)
+	}
+	return nil
+}
+
 // Labels returns every named fingerprint, for report to display.
 func (s *Store) Labels() (map[string]string, error) {
-	rows, err := s.db.Query(`SELECT fp, label FROM networks WHERE label IS NOT NULL AND label != ''`)
+	// One query. A second query here would deadlock: the store has a single
+	// connection, and calling aliasMap while these rows are open waits for a
+	// connection that only these rows can release.
+	rows, err := s.db.Query(`
+SELECT COALESCE(a.alias_of, n.fp), n.label
+FROM networks n
+LEFT JOIN network_alias a ON a.fp = n.fp
+WHERE n.label IS NOT NULL AND n.label != ''`)
 	if err != nil {
 		return nil, err
 	}
@@ -361,6 +501,25 @@ func (s *Store) Labels() (map[string]string, error) {
 			return nil, err
 		}
 		out[fp] = label
+	}
+	return out, rows.Err()
+}
+
+// aliasMap loads every alias at once. Only safe to call when no rows are open.
+func (s *Store) aliasMap() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT fp, alias_of FROM network_alias`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]string)
+	for rows.Next() {
+		var fp, to string
+		if err := rows.Scan(&fp, &to); err != nil {
+			return nil, err
+		}
+		out[fp] = to
 	}
 	return out, rows.Err()
 }
@@ -381,106 +540,17 @@ func (s *Store) SamplesSince(from time.Time) ([]Sample, error) {
 			ts     int64
 			valid  int
 			reason string
-			s      Sample
+			samp   Sample
 		)
-		if err := rows.Scan(&ts, &s.FPKey, &s.RX, &s.TX, &valid, &reason); err != nil {
+		if err := rows.Scan(&ts, &samp.FPKey, &samp.RX, &samp.TX, &valid, &reason); err != nil {
 			return nil, err
 		}
-		s.At = time.Unix(ts, 0).UTC()
-		s.Valid = valid != 0
-		s.Reason = Reason(reason)
-		out = append(out, s)
+		samp.At = time.Unix(ts, 0).UTC()
+		samp.Valid = valid != 0
+		samp.Reason = Reason(reason)
+		out = append(out, samp)
 	}
 	return out, rows.Err()
-}
-
-// uncoveredRaw returns raw samples for days no rollup has claimed. Rolled days
-// are served from daily_usage instead, so counting both would double them.
-func (s *Store) uncoveredRaw(rolled []RolledDay) ([]Sample, error) {
-	raw, err := s.SamplesSince(time.Unix(0, 0))
-	if err != nil {
-		return nil, err
-	}
-	if len(rolled) == 0 {
-		return raw, nil
-	}
-
-	covered := make(map[[2]string]bool, len(rolled))
-	for _, d := range rolled {
-		covered[[2]string{d.FPKey, d.Day}] = true
-	}
-
-	loc := time.Now().Location()
-	out := make([]Sample, 0, len(raw))
-	for _, sm := range raw {
-		if covered[[2]string{sm.FPKey, dayKeyOf(sm.At.In(loc))}] {
-			continue
-		}
-		out = append(out, sm)
-	}
-	return out, nil
-}
-
-// SamplesForReport returns everything the report should count. A rolled-up
-// (fp, day) supersedes the raw rows for that day, and every other raw row is
-// passed through, so days that have not been rolled up yet are still reported
-// from source rather than silently vanishing.
-//
-// No cutoff on the raw side: retention is what bounds it, and until then
-// filtering by date would drop history the rollup has not reached.
-//
-// A rolled day becomes one valid sample stamped at local noon. Daily() buckets
-// by calendar day, so the time only has to land inside the right one, and noon
-// is clear of any DST shift a midnight stamp could straddle.
-func (s *Store) SamplesForReport() ([]Sample, error) {
-	rolled, err := s.DailyUsage()
-	if err != nil {
-		return nil, err
-	}
-	raw, err := s.uncoveredRaw(rolled)
-	if err != nil {
-		return nil, err
-	}
-
-	loc := time.Now().Location()
-	out := make([]Sample, 0, len(raw)+len(rolled))
-	out = append(out, raw...)
-	for _, d := range rolled {
-		day, err := time.ParseInLocation("2006-01-02", d.Day, loc)
-		if err != nil {
-			return nil, fmt.Errorf("parsing rolled day %q: %w", d.Day, err)
-		}
-		out = append(out, Sample{
-			At:    day.Add(12 * time.Hour),
-			FPKey: d.FPKey,
-			RX:    d.RX,
-			TX:    d.TX,
-			Valid: true,
-		})
-	}
-
-	// Discarded samples for rolled days live only in daily_discards, so they
-	// have to come back as samples or the footer cannot count or name them.
-	discards, err := s.DailyDiscardsByDay()
-	if err != nil {
-		return nil, err
-	}
-	for _, d := range discards {
-		day, err := time.ParseInLocation("2006-01-02", d.Day, loc)
-		if err != nil {
-			return nil, fmt.Errorf("parsing rolled day %q: %w", d.Day, err)
-		}
-		for range d.Count {
-			out = append(out, Sample{
-				At:     day.Add(12 * time.Hour),
-				FPKey:  d.FPKey,
-				Reason: Reason(d.Reason),
-			})
-		}
-	}
-
-	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
-	return out, nil
 }
 
 // DiscardStats counts samples and discards for the report footer, in SQL.
@@ -499,19 +569,119 @@ SELECT
 	return total, discarded, err
 }
 
-// RolledDay is one network's usage for one local day, as stored in
-// daily_usage.
-type RolledDay struct {
-	FPKey   string
-	Day     string
-	RX      uint64
-	TX      uint64
-	Samples int
+// SamplesForReport returns everything the report should count. A rolled-up
+// (fp, day) supersedes the raw rows for that day, and every other raw row is
+// passed through, so days that have not been rolled up yet are still reported
+// from source rather than silently vanishing.
+//
+// No cutoff on the raw side: retention is what bounds it, and until then
+// filtering by date would drop history the rollup has not reached.
+//
+// A rolled day becomes one valid sample stamped at local noon. Daily() buckets
+// by calendar day, so the time only has to land inside the right one, and noon
+// is clear of any DST shift a midnight stamp could straddle.
+func (s *Store) SamplesForReport() ([]Sample, error) {
+	// One alias load, taken before anything else opens rows.
+	canonical, err := s.aliasMap()
+	if err != nil {
+		return nil, err
+	}
+
+	raw, err := s.SamplesSince(time.Unix(0, 0))
+	if err != nil {
+		return nil, err
+	}
+	rolled, err := s.dailyUsage(canonical)
+	if err != nil {
+		return nil, err
+	}
+	discards, err := s.dailyDiscardsByDay(canonical)
+	if err != nil {
+		return nil, err
+	}
+
+	loc := time.Now().Location()
+	out := make([]Sample, 0, len(raw)+len(rolled)+len(discards))
+
+	// A rolled (fp, day) supersedes the raw rows it was built from. Retention
+	// deletes those rows, but a rollup can run before it does, and counting
+	// both would double every day in between.
+	covered := make(map[[2]string]bool, len(rolled))
+	for _, d := range rolled {
+		covered[[2]string{d.FPKey, d.Day}] = true
+	}
+
+	for _, sm := range raw {
+		key := sm.FPKey
+		if to, ok := canonical[key]; ok {
+			key = to
+		}
+		if covered[[2]string{key, dayKeyOf(sm.At.In(loc))}] {
+			continue
+		}
+		sm.FPKey = key
+		out = append(out, sm)
+	}
+
+	// A rolled day becomes one valid sample at local noon. Daily() buckets by
+	// calendar day, so noon only has to land inside the right one and is clear
+	// of any DST shift a midnight stamp could straddle.
+	for _, d := range rolled {
+		day, err := time.ParseInLocation("2006-01-02", d.Day, loc)
+		if err != nil {
+			return nil, fmt.Errorf("parsing rolled day %q: %w", d.Day, err)
+		}
+		out = append(out, Sample{
+			At:    day.Add(12 * time.Hour),
+			FPKey: d.FPKey,
+			RX:    d.RX,
+			TX:    d.TX,
+			Valid: true,
+		})
+	}
+
+	// Discards for rolled days live only in daily_discards, so they come back
+	// as samples or the footer cannot count or name them.
+	for _, d := range discards {
+		day, err := time.ParseInLocation("2006-01-02", d.Day, loc)
+		if err != nil {
+			return nil, fmt.Errorf("parsing rolled day %q: %w", d.Day, err)
+		}
+		for range d.Count {
+			out = append(out, Sample{
+				At:     day.Add(12 * time.Hour),
+				FPKey:  d.FPKey,
+				Reason: Reason(d.Reason),
+			})
+		}
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	return out, nil
 }
 
-// DailyUsage returns every rolled-up day. Populated from Phase 2 onward and
-// empty until a rollup runs; nothing reads it yet.
+// dailyUsage reads rolled days, resolving each fingerprint through the map the
+// caller already loaded. Taking the map instead of loading one keeps a single
+// connection from being asked for a second query mid-scan.
+// DailyUsage returns every rolled-up day, with fingerprints resolved.
 func (s *Store) DailyUsage() ([]RolledDay, error) {
+	canonical, err := s.aliasMap()
+	if err != nil {
+		return nil, err
+	}
+	return s.dailyUsage(canonical)
+}
+
+// DailyDiscardsByDay returns rolled-up discards with their day.
+func (s *Store) DailyDiscardsByDay() ([]RolledDiscard, error) {
+	canonical, err := s.aliasMap()
+	if err != nil {
+		return nil, err
+	}
+	return s.dailyDiscardsByDay(canonical)
+}
+
+func (s *Store) dailyUsage(canonical map[string]string) ([]RolledDay, error) {
 	rows, err := s.db.Query(`SELECT fp, day, rx, tx, samples FROM daily_usage ORDER BY day, fp`)
 	if err != nil {
 		return nil, err
@@ -524,22 +694,15 @@ func (s *Store) DailyUsage() ([]RolledDay, error) {
 		if err := rows.Scan(&d.FPKey, &d.Day, &d.RX, &d.TX, &d.Samples); err != nil {
 			return nil, err
 		}
+		if to, ok := canonical[d.FPKey]; ok {
+			d.FPKey = to
+		}
 		out = append(out, d)
 	}
 	return out, rows.Err()
 }
 
-// RolledDiscard is one day's discards for one network and reason.
-type RolledDiscard struct {
-	Day    string
-	FPKey  string
-	Reason string
-	Count  int
-}
-
-// DailyDiscardsByDay returns rolled-up discards with their day, so a reader can
-// rebuild the samples they stand for.
-func (s *Store) DailyDiscardsByDay() ([]RolledDiscard, error) {
+func (s *Store) dailyDiscardsByDay(canonical map[string]string) ([]RolledDiscard, error) {
 	rows, err := s.db.Query(`SELECT day, fp, reason, count FROM daily_discards ORDER BY day, fp, reason`)
 	if err != nil {
 		return nil, err
@@ -552,11 +715,15 @@ func (s *Store) DailyDiscardsByDay() ([]RolledDiscard, error) {
 		if err := rows.Scan(&d.Day, &d.FPKey, &d.Reason, &d.Count); err != nil {
 			return nil, err
 		}
+		if to, ok := canonical[d.FPKey]; ok {
+			d.FPKey = to
+		}
 		out = append(out, d)
 	}
 	return out, rows.Err()
 }
 
+// DailyDiscardsByDay returns rolled-up discards with their day, so a reader can
 // DailyDiscards returns rolled-up discard counts keyed by reason.
 func (s *Store) DailyDiscards() (map[string]int, error) {
 	rows, err := s.db.Query(`SELECT reason, SUM(count) FROM daily_discards GROUP BY reason`)
@@ -591,4 +758,37 @@ func (s *Store) OldestSampleDay() (time.Time, error) {
 		return time.Time{}, nil
 	}
 	return time.Unix(ts.Int64, 0), nil
+}
+
+// AliasedFP is one fingerprint that reports as another.
+type AliasedFP struct {
+	FP      string
+	AliasOf string
+}
+
+// Aliased lists every merged fingerprint.
+func (s *Store) Aliased() ([]AliasedFP, error) {
+	rows, err := s.db.Query(`SELECT fp, alias_of FROM network_alias`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []AliasedFP
+	for rows.Next() {
+		var a AliasedFP
+		if err := rows.Scan(&a.FP, &a.AliasOf); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) labelOf(fp string) (string, bool) {
+	var label sql.NullString
+	if err := s.db.QueryRow(`SELECT label FROM networks WHERE fp = ?`, fp).Scan(&label); err != nil {
+		return "", false
+	}
+	return label.String, label.Valid
 }
