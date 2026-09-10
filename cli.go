@@ -31,7 +31,10 @@ func reportCmd(args []string) error {
 	}
 	defer store.Close()
 
-	samples, err := store.SamplesSince(time.Unix(0, 0))
+	// Raw rows cover the retention window; rolled-up days cover everything
+	// older. Retention deletes nothing yet, so this is the same set as before,
+	// just sourced from whichever table still holds it.
+	samples, err := store.SamplesForReport()
 	if err != nil {
 		return err
 	}

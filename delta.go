@@ -28,6 +28,16 @@ const RollupInterval = time.Hour
 // reaches this far back; earlier days wait for the next pass.
 const MaxRollupLookback = 7 * 24 * time.Hour
 
+// RawRetentionDays is how long unrolled samples are kept. Everything older is
+// served from daily_usage, which is why the rollup must cover a day before
+// retention can drop it.
+const RawRetentionDays = 7
+
+// RetentionCut is the oldest timestamp still served from raw samples.
+func RetentionCut(now time.Time) time.Time {
+	return startOfDay(now).AddDate(0, 0, -(RawRetentionDays - 1))
+}
+
 // Reason marks why a sample was discarded. Keeping the reason lets doctor
 // report a discard rate and separate sleep losses from switch losses, so a
 // silently lossy collector does not look the same as a clean one.

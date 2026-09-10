@@ -10,12 +10,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // DefaultDBPath is where the launchd agent keeps its database.
@@ -348,11 +348,126 @@ func (s *Store) SamplesSince(from time.Time) ([]Sample, error) {
 	return out, rows.Err()
 }
 
-// DiscardStats counts samples and discards, for the report footer.
+// uncoveredRaw returns raw samples for days no rollup has claimed. Rolled days
+// are served from daily_usage instead, so counting both would double them.
+func (s *Store) uncoveredRaw(rolled []RolledDay) ([]Sample, error) {
+	raw, err := s.SamplesSince(time.Unix(0, 0))
+	if err != nil {
+		return nil, err
+	}
+	if len(rolled) == 0 {
+		return raw, nil
+	}
+
+	covered := make(map[[2]string]bool, len(rolled))
+	for _, d := range rolled {
+		covered[[2]string{d.FPKey, d.Day}] = true
+	}
+
+	loc := time.Now().Location()
+	out := make([]Sample, 0, len(raw))
+	for _, sm := range raw {
+		if covered[[2]string{sm.FPKey, dayKeyOf(sm.At.In(loc))}] {
+			continue
+		}
+		out = append(out, sm)
+	}
+	return out, nil
+}
+
+// SamplesForReport returns everything the report should count. A rolled-up
+// (fp, day) supersedes the raw rows for that day, and every other raw row is
+// passed through, so days that have not been rolled up yet are still reported
+// from source rather than silently vanishing.
+//
+// No cutoff on the raw side: retention is what bounds it, and until then
+// filtering by date would drop history the rollup has not reached.
+//
+// A rolled day becomes one valid sample stamped at local noon. Daily() buckets
+// by calendar day, so the time only has to land inside the right one, and noon
+// is clear of any DST shift a midnight stamp could straddle.
+func (s *Store) SamplesForReport() ([]Sample, error) {
+	rolled, err := s.DailyUsage()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.uncoveredRaw(rolled)
+	if err != nil {
+		return nil, err
+	}
+
+	loc := time.Now().Location()
+	out := make([]Sample, 0, len(raw)+len(rolled))
+	out = append(out, raw...)
+	for _, d := range rolled {
+		day, err := time.ParseInLocation("2006-01-02", d.Day, loc)
+		if err != nil {
+			return nil, fmt.Errorf("parsing rolled day %q: %w", d.Day, err)
+		}
+		out = append(out, Sample{
+			At:    day.Add(12 * time.Hour),
+			FPKey: d.FPKey,
+			RX:    d.RX,
+			TX:    d.TX,
+			Valid: true,
+		})
+	}
+
+	// Discarded samples for rolled days live only in daily_discards, so they
+	// have to come back as samples or the footer cannot count or name them.
+	discards, err := s.DailyDiscardsByDay()
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range discards {
+		day, err := time.ParseInLocation("2006-01-02", d.Day, loc)
+		if err != nil {
+			return nil, fmt.Errorf("parsing rolled day %q: %w", d.Day, err)
+		}
+		for range d.Count {
+			out = append(out, Sample{
+				At:     day.Add(12 * time.Hour),
+				FPKey:  d.FPKey,
+				Reason: Reason(d.Reason),
+			})
+		}
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	return out, nil
+}
+
+// DiscardStats counts samples and discards for the report footer. Rolled days
+// contribute their stored counts rather than their collapsed rows: the report
+// renders each rolled day as one sample, so counting rows here would report a
+// discard rate that climbs toward 100% as history is rolled up.
 func (s *Store) DiscardStats() (total, discarded int, err error) {
-	row := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(valid = 0), 0) FROM samples`)
-	err = row.Scan(&total, &discarded)
-	return total, discarded, err
+	rolled, err := s.DailyUsage()
+	if err != nil {
+		return 0, 0, err
+	}
+	raw, err := s.uncoveredRaw(rolled)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, sm := range raw {
+		total++
+		if !sm.Valid {
+			discarded++
+		}
+	}
+	for _, d := range rolled {
+		total += d.Samples
+	}
+	disc, err := s.DailyDiscardsByDay()
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, d := range disc {
+		total += d.Count
+		discarded += d.Count
+	}
+	return total, discarded, nil
 }
 
 // RolledDay is one network's usage for one local day, as stored in
@@ -378,6 +493,34 @@ func (s *Store) DailyUsage() ([]RolledDay, error) {
 	for rows.Next() {
 		var d RolledDay
 		if err := rows.Scan(&d.FPKey, &d.Day, &d.RX, &d.TX, &d.Samples); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// RolledDiscard is one day's discards for one network and reason.
+type RolledDiscard struct {
+	Day    string
+	FPKey  string
+	Reason string
+	Count  int
+}
+
+// DailyDiscardsByDay returns rolled-up discards with their day, so a reader can
+// rebuild the samples they stand for.
+func (s *Store) DailyDiscardsByDay() ([]RolledDiscard, error) {
+	rows, err := s.db.Query(`SELECT day, fp, reason, count FROM daily_discards ORDER BY day, fp, reason`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []RolledDiscard
+	for rows.Next() {
+		var d RolledDiscard
+		if err := rows.Scan(&d.Day, &d.FPKey, &d.Reason, &d.Count); err != nil {
 			return nil, err
 		}
 		out = append(out, d)

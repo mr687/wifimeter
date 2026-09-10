@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -408,5 +409,71 @@ func TestRollupRespectsDayBoundaries(t *testing.T) {
 	}
 	if got[0].RX != 222 {
 		t.Errorf("rx = %d, want 222 (the neighbouring days must stay out)", got[0].RX)
+	}
+}
+
+// The whole point of this phase: for data that has been rolled up, the report
+// must render exactly as it did when it read the raw rows. Same bytes, not
+// merely the same totals.
+func TestReportIdenticalAfterRollup(t *testing.T) {
+	now := time.Date(2026, 9, 9, 18, 30, 0, 0, time.UTC)
+	hot := "192.0.2.1|255.255.255.0|00:00:5e:00:53:01"
+	home := "198.51.100.1|255.255.255.0|00:00:5e:00:53:02"
+
+	day := now.Add(-3 * time.Hour)
+	week := now.Add(-3 * 24 * time.Hour)
+	old := now.Add(-30 * 24 * time.Hour)
+
+	samples := []Sample{
+		{At: day, FPKey: hot, RX: 1_800_000_000, TX: 210_000_000, Valid: true},
+		{At: week, FPKey: hot, RX: 4_400_000_000, TX: 570_000_000, Valid: true},
+		{At: day, FPKey: home, RX: 42_000_000_000, TX: 3_100_000_000, Valid: true},
+		{At: week, FPKey: home, RX: 168_000_000_000, TX: 11_000_000_000, Valid: true},
+		{At: old, FPKey: home, RX: 900_000_000_000, TX: 74_000_000_000, Valid: true},
+		{At: day, FPKey: home, Valid: false, Reason: ReasonSleep},
+		{At: day, FPKey: home, Valid: false, Reason: ReasonSleep},
+		{At: day, FPKey: hot, Valid: false, Reason: ReasonSwitch},
+	}
+
+	labels := map[string]string{hot: "Phone hotspot", home: "Home"}
+	before := Aggregate(samples, windowsFor(now, 7), labels)
+
+	// Same data through a database, with every day rolled up.
+	path := filepath.Join(t.TempDir(), "usage.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	for _, sm := range samples {
+		if err := s.InsertSample(sm); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Roll up in the local zone, which is what both the daemon and
+	// SamplesForReport bucket by. Passing the UTC fixture times would key the
+	// days by UTC while the reader keys by local, and nothing would match.
+	for _, at := range []time.Time{day, week, old} {
+		if err := s.RollupDay(at.In(time.Local)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.SamplesForReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := Aggregate(got, windowsFor(now, 7), labels)
+
+	var sbBefore, sbAfter strings.Builder
+	if err := before.Write(&sbBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := after.Write(&sbAfter); err != nil {
+		t.Fatal(err)
+	}
+	if sbBefore.String() != sbAfter.String() {
+		t.Errorf("report changed after rollup:\n--- raw ---\n%s\n--- rolled ---\n%s", sbBefore.String(), sbAfter.String())
 	}
 }
